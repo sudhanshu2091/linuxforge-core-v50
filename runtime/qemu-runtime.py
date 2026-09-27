@@ -507,7 +507,7 @@ class RuntimeManager:
             require_binary("ssh-keygen")
             run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(private_key)])
         pub = public_key.read_text().strip()
-        user_data = f"""#cloud-config\nusers:\n  - name: {self.ssh_user}\n    shell: /bin/bash\n    lock_passwd: true\n    ssh_authorized_keys:\n      - {pub}\nssh_pwauth: false\nruncmd:\n  - systemctl enable --now ssh || true\n  - mkdir -p /home/{self.ssh_user}\n  - chown {self.ssh_user}:{self.ssh_user} /home/{self.ssh_user}\n"""
+        user_data = f"""#cloud-config\nusers:\n  - name: {self.ssh_user}\n    shell: /bin/bash\n    sudo: ALL=(ALL) NOPASSWD:ALL\n    groups: [sudo, users]\n    lock_passwd: true\n    ssh_authorized_keys:\n      - {pub}\nssh_pwauth: false\nruncmd:\n  - systemctl enable --now ssh || true\n  - mkdir -p /home/{self.ssh_user}\n  - chown {self.ssh_user}:{self.ssh_user} /home/{self.ssh_user}\n  - usermod -aG sudo {self.ssh_user} || true\n  - echo "{self.ssh_user} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/linuxforge-sudo\n  - chmod 0440 /etc/sudoers.d/linuxforge-sudo\n"""
         meta_data = json.dumps({"instance-id": env.environmentId, "local-hostname": f"linuxforge-{env.environmentId}"})
         user_file = env_dir / "user-data"
         meta_file = env_dir / "meta-data"
@@ -959,7 +959,7 @@ class RuntimeManager:
                 require_binary("ssh"), "-tt", "-o", "StrictHostKeyChecking=no",
                 "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=5",
                 "-o", "LogLevel=ERROR", "-i", str(key), "-p", str(env.sshPort),
-                f"{self.ssh_user}@127.0.0.1", f"cd -- {shell_quote(cwd)} && ulimit -u 32 && ulimit -n 256 && exec {shell} -l",
+                f"{self.ssh_user}@127.0.0.1", f"cd -- {shell_quote(cwd)} && ulimit -u 2048 && ulimit -n 4096 && exec {shell} -l",
             ]
             proc = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave,
                                     start_new_session=True, close_fds=True)
@@ -1225,7 +1225,7 @@ def sys_platform() -> str:
     return platform.system().lower()
 
 
-def execution_record(env: Environment, shell: str, command: str, cwd_before: str, cwd_after: str, stdout: str, stderr: str, exit_code: int, duration_ms: int, observation: dict[str, Any], ssh_user: str) -> dict[str, Any]:
+def execution_record(env: Environment, shell: str, command: str, cwd_before: str, cwd_after: str, stdout: str, stderr: str, exit_code: int, duration_ms: int, observation: dict[str, Any], ssh_user: str = DEFAULT_SSH_USER) -> dict[str, Any]:
     chunks = []
     seq = 0
     if stdout:
@@ -1240,21 +1240,21 @@ def execution_record(env: Environment, shell: str, command: str, cwd_before: str
             "filesystem": {
                 "root": f"/home/{ssh_user}",
                 "cwd": cwd_before,
-                "objects": observation["filesystem"],
+                "objects": observation.get("filesystem", []),
                 "modelled": False,
             },
-            "processes": observation["processes"],
-            "network": observation["listeners"],
+            "processes": observation.get("processes", []),
+            "network": observation.get("listeners", []),
         },
         "stateAfter": {
             "filesystem": {
                 "root": f"/home/{ssh_user}",
                 "cwd": cwd_after,
-                "objects": observation["filesystem"],
+                "objects": observation.get("filesystem", []),
                 "modelled": False,
             },
-            "processes": observation["processes"],
-            "network": observation["listeners"],
+            "processes": observation.get("processes", []),
+            "network": observation.get("listeners", []),
         },
         "deltas": {
             "filesystem": [],

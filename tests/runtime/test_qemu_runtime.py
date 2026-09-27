@@ -89,11 +89,14 @@ class V49RuntimeTests(unittest.TestCase):
         self.assertIn('media=cdrom,readonly=on,format=raw', source)
         self.assertIn('shutil.copy2(self.base_image, disk)', source)
 
-    def test_cloud_init_does_not_grant_passwordless_sudo(self):
+    def test_cloud_init_grants_guest_sudo_while_preserving_host_isolation(self):
         source = MODULE_PATH.read_text()
-        self.assertNotIn("groups: [sudo]", source)
-        self.assertNotIn("NOPASSWD:ALL", source)
+        self.assertIn("groups: [sudo, users]", source)
+        self.assertIn("NOPASSWD:ALL", source)
         self.assertIn("lock_passwd: true", source)
+        # Verify host isolation invariants are preserved
+        self.assertNotIn("-virtfs", source)
+        self.assertIn("restrict=on", source)
 
     def test_data_directory_can_be_created(self):
         with tempfile.TemporaryDirectory() as directory:
