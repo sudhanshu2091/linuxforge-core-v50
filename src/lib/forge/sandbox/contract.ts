@@ -64,6 +64,7 @@ export type ProviderCapabilities = {
   network: boolean;
   snapshots: boolean;
   pauseResume: boolean;
+  packages?: boolean | undefined;
 };
 
 /* ------------------------------------------------------------------ */
@@ -283,6 +284,16 @@ export type NetworkState = {
   listeners: { port: number; process: string }[];
 };
 
+export type PackageState = {
+  supported: boolean;
+  packageManager: "dpkg" | "apt" | "rpm" | "pacman" | "unknown";
+  packages: Array<{
+    name: string;
+    version: string;
+    status: string;
+  }>;
+};
+
 export type EnvironmentVariablesState = {
   supported: boolean;
   /** Only non-sensitive variables are ever returned. */
@@ -480,6 +491,19 @@ export type SandboxProvider = {
   pauseEnvironment(handle: EnvironmentHandle): Promise<ProviderResult<EnvironmentDescriptor>>;
   resumeEnvironment(handle: EnvironmentHandle): Promise<ProviderResult<EnvironmentDescriptor>>;
   destroyEnvironment(handle: EnvironmentHandle): Promise<ProviderResult<{ destroyed: true }>>;
+  getPackageState?(
+    handle: EnvironmentHandle,
+    packageNames?: string[],
+  ): Promise<ProviderResult<PackageState>>;
+  getGuestIdentity?(handle: EnvironmentHandle): Promise<ProviderResult<{
+    environmentId: string;
+    expectedArtifactRelease: string;
+    guestName: string;
+    guestVersion: string;
+    guestVersionMatchesArtifact: boolean;
+    kernel: string;
+    verifiedAt: string;
+  }>>;
 };
 
 /** Client-safe projection the terminal UI renders for honest labelling. */

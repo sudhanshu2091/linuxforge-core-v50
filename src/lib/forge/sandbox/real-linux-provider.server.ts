@@ -17,6 +17,7 @@ import {
   type ServiceState,
   type EnvironmentVariablesState,
   type SnapshotRef,
+  type PackageState,
   type RuntimeHealth,
   type RuntimeClass,
   type InspectionPath,
@@ -40,6 +41,7 @@ export const REAL_LINUX_CAPABILITIES: ProviderCapabilities = {
   network: true,
   snapshots: true,
   pauseResume: true,
+  packages: true,
 };
 
 export type RealLinuxProviderConfig = {
@@ -267,5 +269,19 @@ export function createRealLinuxSandboxProvider(
 
     destroyEnvironment: (handle) =>
       call<{ destroyed: true }>(config, `${pathFor(handle)}/destroy`, { handle }),
+
+    getPackageState: (handle, packageNames) =>
+      call<PackageState>(config, `${pathFor(handle)}/packages`, { handle, packageNames: packageNames ?? [] }),
+
+    getGuestIdentity: (handle) =>
+      call<{
+        environmentId: string;
+        expectedArtifactRelease: string;
+        guestName: string;
+        guestVersion: string;
+        guestVersionMatchesArtifact: boolean;
+        kernel: string;
+        verifiedAt: string;
+      }>(config, `${pathFor(handle)}/identity`),
   };
 }

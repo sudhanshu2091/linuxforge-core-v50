@@ -527,5 +527,38 @@ export function createMockSandboxProvider(store: MockBackingStore): SandboxProvi
       await store.patchInstance(handle, { status: "STOPPED" });
       return providerOk({ destroyed: true as const });
     },
+
+    async getPackageState(handle, packageNames) {
+      const owned = await requireOwned(handle);
+      if (!owned.ok) return owned;
+      const allMockPackages = [
+        { name: "bash", version: "5.2.15-2+b7", status: "installed" },
+        { name: "coreutils", version: "9.1-1", status: "installed" },
+        { name: "curl", version: "7.88.1-10+deb12u5", status: "installed" },
+        { name: "nmap", version: "7.93+dfsg1-1", status: "installed" },
+      ];
+      const selected = packageNames && packageNames.length > 0
+        ? allMockPackages.filter((p) => packageNames.includes(p.name))
+        : allMockPackages;
+      return providerOk({
+        supported: true,
+        packageManager: "dpkg" as const,
+        packages: selected,
+      });
+    },
+
+    async getGuestIdentity(handle) {
+      const owned = await requireOwned(handle);
+      if (!owned.ok) return owned;
+      return providerOk({
+        environmentId: handle.environmentId,
+        expectedArtifactRelease: "2026.2",
+        guestName: "Modelled Linux",
+        guestVersion: "2026.2",
+        guestVersionMatchesArtifact: true,
+        kernel: "6.18.0-modelled",
+        verifiedAt: new Date().toISOString(),
+      });
+    },
   };
 }

@@ -1174,6 +1174,23 @@ class RuntimeManager:
             "persistence": self.persistence(env.environmentId),
         }
 
+    def packages(self, env_id: str, package_names: list[str]) -> dict[str, Any]:
+        env = self._get(env_id)
+        fmt = "\x27${Package}\t${Version}\t${Status}\n\x27"
+        if package_names:
+            cmd = f"dpkg-query -W -f={fmt} " + " ".join(shell_quote(p) for p in package_names[:32]) + " 2>/dev/null || true"
+        else:
+            cmd = f"dpkg-query -W -f={fmt} 2>/dev/null | head -100"
+        code, out, _ = self.ssh(env, cmd, timeout=10)
+        packages = []
+        if code == 0:
+            for line in out.splitlines():
+                parts = line.strip().split("	")
+                if len(parts) >= 2:
+                    status = parts[2] if len(parts) >= 3 else "installed"
+                    packages.append({"name": parts[0], "version": parts[1], "status": "installed" if "install ok installed" in status or status == "installed" else "unknown"})
+        return {"supported": True, "packageManager": "dpkg", "packages": packages}
+
     def guest_identity(self, env_id: str) -> dict[str, Any]:
         env = self._get(env_id)
         code, out, err = self.ssh(env, "cat /etc/os-release; printf '\n---KERNEL---\n'; uname -a", timeout=15)
@@ -1302,6 +1319,7 @@ class Handler(BaseHTTPRequestHandler):
                 env = MANAGER._get(parts[2])
                 if len(parts) == 3: return self._json(200, MANAGER.descriptor(env))
                 if parts[3] == "identity": return self._json(200, MANAGER.guest_identity(env.environmentId))
+                if parts[3] == "packages": return self._json(200, MANAGER.packages(env.environmentId, []))
                 if parts[3] == "filesystem": return self._json(200, MANAGER.filesystem(env.environmentId, ""))
                 if parts[3] == "processes": return self._json(200, MANAGER.processes(env.environmentId))
                 if parts[3] == "services": return self._json(200, MANAGER.services(env.environmentId))
@@ -1341,6 +1359,7 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "services": return self._json(200, MANAGER.services(env_id))
                 if action == "environment": return self._json(200, MANAGER.variables(env_id))
                 if action == "inspect": return self._json(200, MANAGER.inspect(env_id, list(body.get("paths") or [])))
+                if action == "packages": return self._json(200, MANAGER.packages(env_id, list(body.get("packageNames") or [])))
             return self._error(404, "Runtime endpoint not found")
         except PermissionError as exc: self._error(401, str(exc))
         except KeyError as exc: self._error(404, str(exc), "ENVIRONMENT_NOT_FOUND")

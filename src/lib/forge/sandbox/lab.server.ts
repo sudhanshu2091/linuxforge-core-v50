@@ -1938,3 +1938,14 @@ export async function labFilesystem(db: Db, userId: string, session: LabSession,
 
   return result;
 }
+
+export async function observeLabEnvironment(
+  _db: Db,
+  _userId: string,
+  session: LabSession,
+  scope?: import("../environment/types").TargetedObservationScope,
+) {
+  const { createEnvironmentObserver } = await import("../environment/observer.server");
+  const observer = createEnvironmentObserver(session.provider);
+  return observer.observe(session.handle, scope ? { scope } : {});
+}

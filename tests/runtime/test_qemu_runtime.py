@@ -189,6 +189,15 @@ class V49RuntimeTests(unittest.TestCase):
             self.assertFalse(module.RuntimeManager._pid_is_expected_qemu(1234, env))
 
 
+    def test_guest_packages_endpoint(self) -> None:
+        mgr = module.RuntimeManager()
+        with mock.patch.object(mgr, "_get", return_value=mock.Mock()), \
+             mock.patch.object(mgr, "ssh", return_value=(0, "bash\t5.2.15-2+b7\tinstall ok installed\ncoreutils\t9.1-1\tinstall ok installed\n", "")):
+            res = mgr.packages("mock-env-id", ["bash", "coreutils"])
+            self.assertTrue(res.get("supported"))
+            self.assertEqual(res.get("packageManager"), "dpkg")
+            self.assertEqual(len(res.get("packages")), 2)
+            self.assertEqual(res["packages"][0]["name"], "bash")
+
 if __name__ == "__main__":
     unittest.main()
-
