@@ -149,6 +149,25 @@ function attemptDeterministicRepair(
   return hasChanged ? repaired : null;
 }
 
+type RuntimeCapabilityKey = keyof CanonicalEnvironmentModel["runtime"]["capabilities"];
+
+const CANONICAL_CAPABILITIES: readonly RuntimeCapabilityKey[] = [
+  "interactiveShell",
+  "streaming",
+  "resize",
+  "processes",
+  "services",
+  "environmentVariables",
+  "network",
+  "snapshots",
+  "pauseResume",
+  "packages",
+] as const;
+
+function isCanonicalCapability(key: string): key is RuntimeCapabilityKey {
+  return (CANONICAL_CAPABILITIES as readonly string[]).includes(key);
+}
+
 /**
  * Gate 2: Environment Validation.
  * Consumes structured capability requirements directly from evaluationPlan.requiredCapabilities
@@ -170,9 +189,15 @@ function validateEnvironmentSupport(
   const net = env.network;
 
   // 1. Direct structured capabilities check: read exercise.evaluationPlan.requiredCapabilities
-  const declaredCapabilities = plan?.requiredCapabilities ?? [];
+  const declaredCapabilities = (plan?.requiredCapabilities ?? []) as string[];
 
   for (const cap of declaredCapabilities) {
+    if (!isCanonicalCapability(cap)) {
+      reasons.push(
+        `Exercise structurally requires unknown capability '${cap}'.`,
+      );
+      continue;
+    }
     if (!caps || caps[cap] !== true) {
       reasons.push(
         `Exercise structurally requires capability '${cap}', but environment does not support it (value is ${String(caps ? caps[cap] : undefined)}).`,

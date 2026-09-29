@@ -163,9 +163,12 @@ export const aiObserver: ObserverAdapter = {
   },
 };
 
-export const deterministicObserver: ObserverAdapter & {
+export type DeterministicObserver = {
+  id: string;
   observe: (input: ObserverInput) => Observation;
-} = {
+};
+
+export const deterministicObserver: DeterministicObserver = {
   id: "forge-deterministic-observer-v1",
   observe({ contract, raw, execution, verification, history, hintsUsed, language }): Observation {
     const trimmedRaw = raw.trim();
@@ -294,7 +297,7 @@ export const deterministicObserver: ObserverAdapter & {
           ? "VALID_ALTERNATIVE"
           : independent
             ? "INDEPENDENT_SOLUTION"
-            : "INDEPENDENT_SOLUTION",
+            : null,
         conceptUnderstanding: "solid",
         skillDemonstrated: true,
         coaching: line(
