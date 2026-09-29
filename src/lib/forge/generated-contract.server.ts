@@ -22,6 +22,7 @@ export type GeneratedEvaluationPlan = {
   requiredCommandKinds?: string[];
   requireLoop?: boolean;
   minimumMutations?: number;
+  requiredCapabilities?: string[];
 };
 
 export type GeneratedDefinition = {

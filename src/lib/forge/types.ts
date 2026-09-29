@@ -251,6 +251,18 @@ export type AdaptiveExercise = {
     requiredCommandKinds?: string[];
     requireLoop?: boolean;
     minimumMutations?: number;
+    requiredCapabilities?: Array<
+      | "interactiveShell"
+      | "streaming"
+      | "resize"
+      | "processes"
+      | "services"
+      | "environmentVariables"
+      | "network"
+      | "snapshots"
+      | "pauseResume"
+      | "packages"
+    >;
   };
 };
 

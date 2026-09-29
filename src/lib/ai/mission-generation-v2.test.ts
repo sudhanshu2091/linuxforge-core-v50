@@ -4,13 +4,14 @@ import type { CanonicalEnvironmentModel, MissionArtifact } from "@/lib/forge/env
 import type { MissionBlueprint } from "./mission-generator";
 import { validateAndPublishMissionV2 } from "./mission-generation-v2.server";
 
+// Valid base blueprint: primarySkill is "permissions", which has canonical prerequisite ["filesystem"] in SKILL_GRAPH
 const validBlueprint: MissionBlueprint = {
   version: "v32",
   archetype: "PROGRESSION",
   primarySkill: "permissions",
-  supportingSkills: ["filesystem"],
+  supportingSkills: [],
   difficulty: 2,
-  prerequisites: ["filesystem"], // Valid: permissions depends on filesystem in SKILL_GRAPH
+  prerequisites: ["filesystem"], // Exact canonical prerequisite set
   objectiveShape: "Audit permissions for the team directory",
   storyContinuity: "Operation Citadel initialization",
   evidenceFocus: ["permissions"],
@@ -25,7 +26,7 @@ const validExercise: AdaptiveExercise = {
   title: "Defensive Workspace Audit",
   scenario: "The incident response team requires an isolated workspace in /home/learner/workspace.",
   objective: "Audit permissions for the team directory and verify security mode.",
-  skills: ["permissions", "filesystem"],
+  skills: ["permissions"],
   difficulty: 2,
   estimatedMinutes: 15,
   sourceRefs: [
@@ -114,47 +115,17 @@ const mockSupportedEnv: CanonicalEnvironmentModel = {
   capturedAt: new Date().toISOString(),
 };
 
-describe("Mission & Question Generation V2 — Deterministic Server-Side Validation Pipeline", () => {
-  it("1. schema gate executes first: candidate failing schema is rejected as SCHEMA_INVALID before later gates", () => {
-    // Fails schema (short title) AND environment (requires network on no-network env)
-    const invalidSchemaAndEnv: AdaptiveExercise = {
+describe("Mission Generation V2 — Pass 2B Formal Suite", () => {
+  // ---------------------------------------------------------
+  // 1. Pipeline Gate Order
+  // ---------------------------------------------------------
+  it("Gate 1 executes first: schema failure rejects as SCHEMA_INVALID before later gates", () => {
+    const invalidSchema: AdaptiveExercise = {
       ...validExercise,
-      title: "bad", // < 8 characters -> SCHEMA_INVALID
-      skills: ["networking"],
-    };
-
-    const noNetEnv: CanonicalEnvironmentModel = {
-      ...mockSupportedEnv,
-      runtime: {
-        ...mockSupportedEnv.runtime,
-        capabilities: {
-          ...mockSupportedEnv.runtime.capabilities,
-          network: false,
-        },
-      },
-    };
-
-    const res = validateAndPublishMissionV2(invalidSchemaAndEnv, {
-      environment: noNetEnv,
-    });
-
-    expect(res.ok).toBe(false);
-    if (!res.ok) {
-      expect(res.reason).toBe("SCHEMA_INVALID");
-    }
-  });
-
-  it("2. structured environment capability requirement: enforced without literal prose strings", () => {
-    // Evaluation focus says "package" and requiredCommandKinds has "mkdir" (valid command in executor)
-    const structuredPkgExercise: AdaptiveExercise = {
-      ...validExercise,
-      title: "Package Requirement Verification",
-      scenario: "Prepare the defensive tools suite for the forensic team workspace.",
-      objective: "Audit permissions for the team directory and verify tool packages.",
-      evaluationFocus: ["package installation"], // Structured requirement
+      title: "bad", // < 8 chars -> SCHEMA_INVALID
       evaluationPlan: {
-        objectives: [{ label: "tool ready", path: "tools", objectType: "directory" }],
-        requiredCommandKinds: ["mkdir"],
+        objectives: [{ label: "obj", path: "test", objectType: "file" }],
+        requiredCapabilities: ["packages"],
       },
     };
 
@@ -169,287 +140,690 @@ describe("Mission & Question Generation V2 — Deterministic Server-Side Validat
       },
     };
 
-    const res = validateAndPublishMissionV2(structuredPkgExercise, {
-      blueprint: validBlueprint,
+    const res = validateAndPublishMissionV2(invalidSchema, {
       environment: noPkgEnv,
     });
 
     expect(res.ok).toBe(false);
     if (!res.ok) {
-      expect(res.reason).toBe("ENVIRONMENT_UNSUPPORTED");
-      expect(res.reasons.some((r) => r.includes("package capability"))).toBe(true);
+      expect(res.reason).toBe("SCHEMA_INVALID");
     }
   });
 
-  it("3. unknown environment capability (undefined/null/false) is treated as unsupported", () => {
-    const unknownEnv: CanonicalEnvironmentModel = {
-      ...mockSupportedEnv,
-      runtime: {
-        ...mockSupportedEnv.runtime,
-        capabilities: {
-          ...mockSupportedEnv.runtime.capabilities,
-          services: false,
-        },
-      },
-    };
+  // ---------------------------------------------------------
+  // 2. PREREQUISITES (A through J)
+  // ---------------------------------------------------------
+  describe("Prerequisites — Exact Canonical Set Equality (A-J)", () => {
+    it("A. filesystem with [] => PASS (filesystem has empty canonical prerequisite set)", () => {
+      const fsBlueprint: MissionBlueprint = {
+        ...validBlueprint,
+        primarySkill: "filesystem",
+        supportingSkills: [],
+        prerequisites: [],
+        objectiveShape: "Audit files in directory",
+      };
+      const fsExercise: AdaptiveExercise = {
+        ...validExercise,
+        skills: ["filesystem"],
+        objective: "Audit files in directory and list contents accurately.",
+      };
 
-    const svcExercise: AdaptiveExercise = {
-      ...validExercise,
-      title: "Service Requirement Verification",
-      scenario: "Prepare the daemon logging directory for the team.",
-      objective: "Audit permissions for the team directory and verify background service.",
-      evaluationFocus: ["service management"],
-      evaluationPlan: {
-        objectives: [{ label: "svc ready", path: "svc", objectType: "directory" }],
-        requiredCommandKinds: ["mkdir"],
-      },
-    };
-
-    const res = validateAndPublishMissionV2(svcExercise, {
-      blueprint: validBlueprint,
-      environment: unknownEnv,
-    });
-
-    expect(res.ok).toBe(false);
-    if (!res.ok) {
-      expect(res.reason).toBe("ENVIRONMENT_UNSUPPORTED");
-      expect(res.reasons.some((r) => r.includes("service capability"))).toBe(true);
-    }
-  });
-
-  it("4. network isolation remains strictly enforced for external operations", () => {
-    const isolatedEnv: CanonicalEnvironmentModel = {
-      ...mockSupportedEnv,
-      network: {
-        supported: true,
-        networkIsolationEnforced: true,
-        listeners: [],
-        evidence: "OBSERVED_FACT",
-      },
-    };
-
-    const netBlueprint: MissionBlueprint = {
-      ...validBlueprint,
-      primarySkill: "networking",
-      supportingSkills: ["filesystem"],
-      prerequisites: ["filesystem"],
-      objectiveShape: "Configure local network diagnostics",
-    };
-
-    const netExercise: AdaptiveExercise = {
-      ...validExercise,
-      title: "External Network Sync Drill",
-      skills: ["networking", "filesystem"],
-      objective: "Configure local network diagnostics and sync external telemetry.",
-      evaluationFocus: ["external network"],
-      evaluationPlan: {
-        objectives: [{ label: "sync", path: "sync.log", objectType: "file" }],
-        requiredCommandKinds: ["touch"],
-      },
-    };
-
-    const res = validateAndPublishMissionV2(netExercise, {
-      blueprint: netBlueprint,
-      environment: isolatedEnv,
-    });
-
-    expect(res.ok).toBe(false);
-    if (!res.ok) {
-      expect(res.reason).toBe("ENVIRONMENT_UNSUPPORTED");
-      expect(res.reasons.some((r) => r.includes("strict network isolation"))).toBe(true);
-    }
-  });
-
-  it("5. valid prerequisite consistent with SKILL_GRAPH passes", () => {
-    const res = validateAndPublishMissionV2(validExercise, {
-      blueprint: validBlueprint,
-      environment: mockSupportedEnv,
-    });
-
-    expect(res.ok).toBe(true);
-    if (res.ok) {
-      expect(res.exercise.skills).toContain("permissions");
-    }
-  });
-
-  it("6. invalid prerequisite skill rejected (PREREQUISITE_INVALID)", () => {
-    const invalidPrereqBlueprint: MissionBlueprint = {
-      ...validBlueprint,
-      primarySkill: "permissions",
-      prerequisites: ["nonexistent_skill" as any],
-    };
-
-    const res = validateAndPublishMissionV2(validExercise, {
-      blueprint: invalidPrereqBlueprint,
-    });
-
-    expect(res.ok).toBe(false);
-    if (!res.ok) {
-      expect(res.reason).toBe("PREREQUISITE_INVALID");
-      expect(res.reasons.some((r) => r.includes("not registered"))).toBe(true);
-    }
-  });
-
-  it("7. circular or self prerequisite rejected (PREREQUISITE_INVALID)", () => {
-    const circularBlueprint: MissionBlueprint = {
-      ...validBlueprint,
-      primarySkill: "permissions",
-      prerequisites: ["permissions"], // Self reference
-    };
-
-    const res = validateAndPublishMissionV2(validExercise, {
-      blueprint: circularBlueprint,
-    });
-
-    expect(res.ok).toBe(false);
-    if (!res.ok) {
-      expect(res.reason).toBe("PREREQUISITE_INVALID");
-      expect(res.reasons.some((r) => r.includes("Circular prerequisite"))).toBe(true);
-    }
-  });
-
-  it("8. generic continuity with arbitrary artifact A (workspace/report.txt)", () => {
-    const artifactA: MissionArtifact = {
-      id: "art-alpha",
-      kind: "file",
-      identifier: "workspace/report.txt",
-      verified: true,
-      evidence: "OBSERVED_FACT",
-    };
-
-    const res = validateAndPublishMissionV2(validExercise, {
-      blueprint: validBlueprint,
-      environment: mockSupportedEnv,
-      trackedMissionArtifacts: [artifactA],
-      requiredPriorArtifacts: ["workspace/report.txt"],
-    });
-
-    expect(res.ok).toBe(true);
-  });
-
-  it("9. generic continuity with arbitrary artifact B (incident/evidence.log)", () => {
-    const artifactB: MissionArtifact = {
-      id: "art-beta",
-      kind: "file",
-      identifier: "incident/evidence.log",
-      verified: true,
-      evidence: "OBSERVED_FACT",
-    };
-
-    const res = validateAndPublishMissionV2(validExercise, {
-      blueprint: validBlueprint,
-      environment: mockSupportedEnv,
-      trackedMissionArtifacts: [artifactB],
-      requiredPriorArtifacts: ["incident/evidence.log"],
-    });
-
-    expect(res.ok).toBe(true);
-  });
-
-  it("10. missing required prior artifact rejected (CONTINUITY_INVALID)", () => {
-    const res = validateAndPublishMissionV2(validExercise, {
-      blueprint: validBlueprint,
-      environment: mockSupportedEnv,
-      trackedMissionArtifacts: [], // Empty context
-      requiredPriorArtifacts: ["incident/evidence.log"], // Missing!
-    });
-
-    expect(res.ok).toBe(false);
-    if (!res.ok) {
-      expect(res.reason).toBe("CONTINUITY_INVALID");
-      expect(res.reasons.some((r) => r.includes("incident/evidence.log"))).toBe(true);
-    }
-  });
-
-  it("11. mission without continuity dependency passes normally", () => {
-    const res = validateAndPublishMissionV2(validExercise, {
-      blueprint: validBlueprint,
-      environment: mockSupportedEnv,
-    });
-
-    expect(res.ok).toBe(true);
-  });
-
-  it("12. bounded repair still works for safe structural formatting", () => {
-    const unformattedExercise: AdaptiveExercise = {
-      ...validExercise,
-      title: "   Defensive Workspace Audit   ",
-      difficulty: 2.3,
-      evaluationPlan: {
-        objectives: [
-          {
-            label: "Workspace directory exists",
-            path: "/home/learner/workspace",
-            objectType: "directory",
-            permissions: "750",
-          },
-        ],
-        requiredCommandKinds: [" mkdir ", "CHMOD"],
-      },
-    };
-
-    const res = validateAndPublishMissionV2(unformattedExercise, {
-      blueprint: validBlueprint,
-      environment: mockSupportedEnv,
-    });
-
-    expect(res.ok).toBe(true);
-    if (res.ok) {
-      expect(res.repaired).toBe(true);
-      expect(res.repairAttempts).toBe(1);
-      expect(res.exercise.title).toBe("Defensive Workspace Audit");
-      expect(res.exercise.difficulty).toBe(2);
-      expect(res.exercise.evaluationPlan?.objectives[0]?.path).toBe("workspace");
-    }
-  });
-
-  it("13. deterministic contract preserves prerequisites and previousReferences", () => {
-    const res = validateAndPublishMissionV2(validExercise, {
-      blueprint: validBlueprint,
-      environment: mockSupportedEnv,
-      knownScenarioArtifacts: ["archive/evidence.tar.gz"],
-    });
-
-    expect(res.ok).toBe(true);
-    if (res.ok && res.contract) {
-      expect(res.contract.prerequisites).toEqual(["filesystem"]);
-      expect(res.contract.previousReferences).toEqual(["archive/evidence.tar.gz"]);
-
-      // Verify contract with mock world
-      const mockWorld = new Map();
-      mockWorld.set("workspace", {
-        path: "workspace",
-        objectType: "directory",
-        permissions: "750",
+      const res = validateAndPublishMissionV2(fsExercise, {
+        blueprint: fsBlueprint,
+        environment: mockSupportedEnv,
       });
 
-      const outcome = res.contract.verify(mockWorld as any, {
-        commands: ["mkdir -p workspace", "chmod 750 workspace"],
-        usedLoop: false,
-        operations: 2,
-      } as any);
+      expect(res.ok).toBe(true);
+    });
 
-      expect(outcome.objectives[0]?.met).toBe(true);
-      expect(outcome.skillDemonstrated).toBe(true);
-    }
+    it("B. permissions with ['filesystem'] => PASS", () => {
+      const res = validateAndPublishMissionV2(validExercise, {
+        blueprint: validBlueprint,
+        environment: mockSupportedEnv,
+      });
+
+      expect(res.ok).toBe(true);
+    });
+
+    it("C. hardening with ['filesystem', 'permissions', 'networking'] => PASS", () => {
+      const hardeningBlueprint: MissionBlueprint = {
+        ...validBlueprint,
+        primarySkill: "hardening",
+        supportingSkills: [],
+        prerequisites: ["filesystem", "permissions", "networking"],
+        objectiveShape: "Harden system and secure network configuration",
+      };
+      const hardeningExercise: AdaptiveExercise = {
+        ...validExercise,
+        skills: ["hardening"],
+        objective: "Harden system and secure network configuration against attacks.",
+      };
+
+      const res = validateAndPublishMissionV2(hardeningExercise, {
+        blueprint: hardeningBlueprint,
+        environment: mockSupportedEnv,
+      });
+
+      expect(res.ok).toBe(true);
+    });
+
+    it("D. hardening with only ['filesystem'] => FAIL (incomplete canonical set)", () => {
+      const incompleteBlueprint: MissionBlueprint = {
+        ...validBlueprint,
+        primarySkill: "hardening",
+        supportingSkills: [],
+        prerequisites: ["filesystem"],
+        objectiveShape: "Harden system and secure network configuration",
+      };
+      const hardeningExercise: AdaptiveExercise = {
+        ...validExercise,
+        skills: ["hardening"],
+        objective: "Harden system and secure network configuration against attacks.",
+      };
+
+      const res = validateAndPublishMissionV2(hardeningExercise, {
+        blueprint: incompleteBlueprint,
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reason).toBe("PREREQUISITE_INVALID");
+        expect(res.reasons.some((r) => r.includes("Missing canonical prerequisite 'permissions'"))).toBe(true);
+        expect(res.reasons.some((r) => r.includes("Missing canonical prerequisite 'networking'"))).toBe(true);
+      }
+    });
+
+    it("E. hardening missing any one canonical prerequisite => FAIL", () => {
+      const missingNetworkingBlueprint: MissionBlueprint = {
+        ...validBlueprint,
+        primarySkill: "hardening",
+        supportingSkills: [],
+        prerequisites: ["filesystem", "permissions"], // Missing networking
+        objectiveShape: "Harden system and secure network configuration",
+      };
+      const hardeningExercise: AdaptiveExercise = {
+        ...validExercise,
+        skills: ["hardening"],
+        objective: "Harden system and secure network configuration against attacks.",
+      };
+
+      const res = validateAndPublishMissionV2(hardeningExercise, {
+        blueprint: missingNetworkingBlueprint,
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reason).toBe("PREREQUISITE_INVALID");
+        expect(res.reasons.some((r) => r.includes("Missing canonical prerequisite 'networking'"))).toBe(true);
+      }
+    });
+
+    it("F. hardening with an unexpected extra prerequisite => FAIL", () => {
+      const extraBlueprint: MissionBlueprint = {
+        ...validBlueprint,
+        primarySkill: "hardening",
+        supportingSkills: [],
+        prerequisites: ["filesystem", "permissions", "networking", "iteration"], // 'iteration' is extra
+        objectiveShape: "Harden system and secure network configuration",
+      };
+      const hardeningExercise: AdaptiveExercise = {
+        ...validExercise,
+        skills: ["hardening"],
+        objective: "Harden system and secure network configuration against attacks.",
+      };
+
+      const res = validateAndPublishMissionV2(hardeningExercise, {
+        blueprint: extraBlueprint,
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reason).toBe("PREREQUISITE_INVALID");
+        expect(res.reasons.some((r) => r.includes("Unexpected extra prerequisite 'iteration'"))).toBe(true);
+      }
+    });
+
+    it("G. primary skill included as its own prerequisite => FAIL", () => {
+      const selfPrereqBlueprint: MissionBlueprint = {
+        ...validBlueprint,
+        primarySkill: "permissions",
+        prerequisites: ["permissions"],
+      };
+
+      const res = validateAndPublishMissionV2(validExercise, {
+        blueprint: selfPrereqBlueprint,
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reason).toBe("PREREQUISITE_INVALID");
+        expect(res.reasons.some((r) => r.includes("Circular prerequisite"))).toBe(true);
+      }
+    });
+
+    it("H. invalid SkillId => FAIL", () => {
+      const invalidSkillBlueprint: MissionBlueprint = {
+        ...validBlueprint,
+        primarySkill: "permissions",
+        prerequisites: ["nonexistent_skill" as any],
+      };
+
+      const res = validateAndPublishMissionV2(validExercise, {
+        blueprint: invalidSkillBlueprint,
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reason).toBe("PREREQUISITE_INVALID");
+        expect(res.reasons.some((r) => r.includes("not registered"))).toBe(true);
+      }
+    });
+
+    it("I. supporting-skill prerequisites included in canonical expected set => PASS only when complete set is present", () => {
+      // primary: "permissions" (needs filesystem)
+      // supporting: ["shell-scripting"] (needs filesystem, iteration)
+      // expected union: ["filesystem", "iteration"]
+      const multiSkillBlueprint: MissionBlueprint = {
+        ...validBlueprint,
+        primarySkill: "permissions",
+        supportingSkills: ["shell-scripting"],
+        prerequisites: ["filesystem", "iteration"],
+      };
+
+      const multiSkillExercise: AdaptiveExercise = {
+        ...validExercise,
+        skills: ["permissions", "shell-scripting"],
+      };
+
+      const res = validateAndPublishMissionV2(multiSkillExercise, {
+        blueprint: multiSkillBlueprint,
+        environment: mockSupportedEnv,
+      });
+
+      expect(res.ok).toBe(true);
+    });
+
+    it("J. duplicate prerequisite => FAIL", () => {
+      const duplicatePrereqBlueprint: MissionBlueprint = {
+        ...validBlueprint,
+        primarySkill: "permissions",
+        prerequisites: ["filesystem", "filesystem"], // Duplicate
+      };
+
+      const res = validateAndPublishMissionV2(validExercise, {
+        blueprint: duplicatePrereqBlueprint,
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reason).toBe("PREREQUISITE_INVALID");
+        expect(res.reasons.some((r) => r.includes("Duplicate prerequisite"))).toBe(true);
+      }
+    });
   });
 
-  it("14. identical input remains strictly deterministic", () => {
-    const run1 = validateAndPublishMissionV2(validExercise, {
-      blueprint: validBlueprint,
-      environment: mockSupportedEnv,
+  // ---------------------------------------------------------
+  // 3. ENVIRONMENT (K through S)
+  // ---------------------------------------------------------
+  describe("Environment — Explicit Capabilities Only (K-S)", () => {
+    it("K. requiredCapabilities ['packages'] + packages=true => PASS", () => {
+      const exerciseWithPackages: AdaptiveExercise = {
+        ...validExercise,
+        evaluationPlan: {
+          ...validExercise.evaluationPlan!,
+          requiredCapabilities: ["packages"],
+        },
+      };
+
+      const res = validateAndPublishMissionV2(exerciseWithPackages, {
+        blueprint: validBlueprint,
+        environment: mockSupportedEnv,
+      });
+
+      expect(res.ok).toBe(true);
     });
 
-    const run2 = validateAndPublishMissionV2(validExercise, {
-      blueprint: validBlueprint,
-      environment: mockSupportedEnv,
+    it("L. requiredCapabilities ['packages'] + packages=false => FAIL ENVIRONMENT_UNSUPPORTED", () => {
+      const exerciseWithPackages: AdaptiveExercise = {
+        ...validExercise,
+        evaluationPlan: {
+          ...validExercise.evaluationPlan!,
+          requiredCapabilities: ["packages"],
+        },
+      };
+
+      const envNoPkg: CanonicalEnvironmentModel = {
+        ...mockSupportedEnv,
+        runtime: {
+          ...mockSupportedEnv.runtime,
+          capabilities: {
+            ...mockSupportedEnv.runtime.capabilities,
+            packages: false,
+          },
+        },
+      };
+
+      const res = validateAndPublishMissionV2(exerciseWithPackages, {
+        blueprint: validBlueprint,
+        environment: envNoPkg,
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reason).toBe("ENVIRONMENT_UNSUPPORTED");
+        expect(res.reasons.some((r) => r.includes("packages"))).toBe(true);
+      }
     });
 
-    expect(run1.ok).toBe(run2.ok);
-    if (run1.ok && run2.ok) {
-      expect(run1.exercise.id).toBe(run2.exercise.id);
-      expect(run1.contract?.id).toBe(run2.contract?.id);
-      expect(run1.contract?.xpReward).toBe(run2.contract?.xpReward);
-    }
+    it("M. requiredCapabilities ['packages'] + packages=undefined => FAIL ENVIRONMENT_UNSUPPORTED", () => {
+      const exerciseWithPackages: AdaptiveExercise = {
+        ...validExercise,
+        evaluationPlan: {
+          ...validExercise.evaluationPlan!,
+          requiredCapabilities: ["packages"],
+        },
+      };
+
+      const envUndefinedPkg: CanonicalEnvironmentModel = {
+        ...mockSupportedEnv,
+        runtime: {
+          ...mockSupportedEnv.runtime,
+          capabilities: {
+            ...mockSupportedEnv.runtime.capabilities,
+            packages: undefined,
+          },
+        },
+      };
+
+      const res = validateAndPublishMissionV2(exerciseWithPackages, {
+        blueprint: validBlueprint,
+        environment: envUndefinedPkg,
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reason).toBe("ENVIRONMENT_UNSUPPORTED");
+      }
+    });
+
+    it("N. services=false => FAIL", () => {
+      const exerciseWithServices: AdaptiveExercise = {
+        ...validExercise,
+        evaluationPlan: {
+          ...validExercise.evaluationPlan!,
+          requiredCapabilities: ["services"],
+        },
+      };
+
+      const envNoSvc: CanonicalEnvironmentModel = {
+        ...mockSupportedEnv,
+        runtime: {
+          ...mockSupportedEnv.runtime,
+          capabilities: {
+            ...mockSupportedEnv.runtime.capabilities,
+            services: false,
+          },
+        },
+      };
+
+      const res = validateAndPublishMissionV2(exerciseWithServices, {
+        blueprint: validBlueprint,
+        environment: envNoSvc,
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reason).toBe("ENVIRONMENT_UNSUPPORTED");
+        expect(res.reasons.some((r) => r.includes("services"))).toBe(true);
+      }
+    });
+
+    it("O. processes=false => FAIL", () => {
+      const exerciseWithProcesses: AdaptiveExercise = {
+        ...validExercise,
+        evaluationPlan: {
+          ...validExercise.evaluationPlan!,
+          requiredCapabilities: ["processes"],
+        },
+      };
+
+      const envNoProc: CanonicalEnvironmentModel = {
+        ...mockSupportedEnv,
+        runtime: {
+          ...mockSupportedEnv.runtime,
+          capabilities: {
+            ...mockSupportedEnv.runtime.capabilities,
+            processes: false,
+          },
+        },
+      };
+
+      const res = validateAndPublishMissionV2(exerciseWithProcesses, {
+        blueprint: validBlueprint,
+        environment: envNoProc,
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reason).toBe("ENVIRONMENT_UNSUPPORTED");
+        expect(res.reasons.some((r) => r.includes("processes"))).toBe(true);
+      }
+    });
+
+    it("P. network=false => FAIL", () => {
+      const exerciseWithNetwork: AdaptiveExercise = {
+        ...validExercise,
+        evaluationPlan: {
+          ...validExercise.evaluationPlan!,
+          requiredCapabilities: ["network"],
+        },
+      };
+
+      const envNoNet: CanonicalEnvironmentModel = {
+        ...mockSupportedEnv,
+        runtime: {
+          ...mockSupportedEnv.runtime,
+          capabilities: {
+            ...mockSupportedEnv.runtime.capabilities,
+            network: false,
+          },
+        },
+      };
+
+      const res = validateAndPublishMissionV2(exerciseWithNetwork, {
+        blueprint: validBlueprint,
+        environment: envNoNet,
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reason).toBe("ENVIRONMENT_UNSUPPORTED");
+        expect(res.reasons.some((r) => r.includes("network"))).toBe(true);
+      }
+    });
+
+    it("Q. network isolation enforced + external network requirement => FAIL", () => {
+      const exerciseWithExternalNet: AdaptiveExercise = {
+        ...validExercise,
+        evaluationFocus: ["external network sync"],
+        evaluationPlan: {
+          ...validExercise.evaluationPlan!,
+          requiredCapabilities: ["network"],
+        },
+      };
+
+      const isolatedEnv: CanonicalEnvironmentModel = {
+        ...mockSupportedEnv,
+        network: {
+          supported: true,
+          networkIsolationEnforced: true,
+          listeners: [],
+          evidence: "OBSERVED_FACT",
+        },
+      };
+
+      const res = validateAndPublishMissionV2(exerciseWithExternalNet, {
+        blueprint: validBlueprint,
+        environment: isolatedEnv,
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reason).toBe("ENVIRONMENT_UNSUPPORTED");
+        expect(res.reasons.some((r) => r.includes("strict network isolation"))).toBe(true);
+      }
+    });
+
+    it("R. no requiredCapabilities => does not invent requirements", () => {
+      const res = validateAndPublishMissionV2(validExercise, {
+        blueprint: validBlueprint,
+        environment: mockSupportedEnv,
+      });
+
+      expect(res.ok).toBe(true);
+    });
+
+    it("S. requiredCommandKinds alone MUST NOT infer capability support", () => {
+      // Evaluation plan contains "apt" in requiredCommandKinds (command evidence),
+      // but requiredCapabilities is empty. Therefore V2 does NOT infer packages requirement.
+      const envNoPkg: CanonicalEnvironmentModel = {
+        ...mockSupportedEnv,
+        runtime: {
+          ...mockSupportedEnv.runtime,
+          capabilities: {
+            ...mockSupportedEnv.runtime.capabilities,
+            packages: false,
+          },
+        },
+      };
+
+      const res = validateAndPublishMissionV2(validExercise, {
+        blueprint: validBlueprint,
+        environment: envNoPkg,
+      });
+
+      // Passes without error because requiredCapabilities was not requested!
+      expect(res.ok).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------
+  // 4. CONTINUITY (T through Z)
+  // ---------------------------------------------------------
+  describe("Continuity — Structured MissionArtifact Semantics (T-Z)", () => {
+    it("T. verified file artifact workspace/report.txt => PASS", () => {
+      const artifactA: MissionArtifact = {
+        id: "art-alpha",
+        kind: "file",
+        identifier: "workspace/report.txt",
+        verified: true,
+        evidence: "OBSERVED_FACT",
+      };
+
+      const res = validateAndPublishMissionV2(validExercise, {
+        blueprint: validBlueprint,
+        environment: mockSupportedEnv,
+        trackedMissionArtifacts: [artifactA],
+        requiredPriorArtifacts: ["workspace/report.txt"],
+      });
+
+      expect(res.ok).toBe(true);
+    });
+
+    it("U. verified file artifact incident/evidence.log => PASS", () => {
+      const artifactB: MissionArtifact = {
+        id: "art-beta",
+        kind: "file",
+        identifier: "incident/evidence.log",
+        verified: true,
+        evidence: "OBSERVED_FACT",
+      };
+
+      const res = validateAndPublishMissionV2(validExercise, {
+        blueprint: validBlueprint,
+        environment: mockSupportedEnv,
+        trackedMissionArtifacts: [artifactB],
+        requiredPriorArtifacts: ["incident/evidence.log"],
+      });
+
+      expect(res.ok).toBe(true);
+    });
+
+    it("V. missing artifact => FAIL CONTINUITY_INVALID", () => {
+      const res = validateAndPublishMissionV2(validExercise, {
+        blueprint: validBlueprint,
+        environment: mockSupportedEnv,
+        trackedMissionArtifacts: [],
+        requiredPriorArtifacts: ["incident/evidence.log"],
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reason).toBe("CONTINUITY_INVALID");
+        expect(res.reasons.some((r) => r.includes("incident/evidence.log"))).toBe(true);
+      }
+    });
+
+    it("W. same identifier but verified=false => FAIL", () => {
+      const unverifiedArtifact: MissionArtifact = {
+        id: "art-unverified",
+        kind: "file",
+        identifier: "workspace/report.txt",
+        verified: false,
+        evidence: "OBSERVED_FACT",
+      };
+
+      const res = validateAndPublishMissionV2(validExercise, {
+        blueprint: validBlueprint,
+        environment: mockSupportedEnv,
+        trackedMissionArtifacts: [unverifiedArtifact],
+        requiredPriorArtifacts: ["workspace/report.txt"],
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reason).toBe("CONTINUITY_INVALID");
+        expect(res.reasons.some((r) => r.includes("not verified"))).toBe(true);
+      }
+    });
+
+    it("X. same identifier but wrong explicit kind => FAIL", () => {
+      const dirArtifact: MissionArtifact = {
+        id: "art-dir",
+        kind: "directory", // Wrong kind (expected "file")
+        identifier: "workspace/report.txt",
+        verified: true,
+        evidence: "OBSERVED_FACT",
+      };
+
+      const res = validateAndPublishMissionV2(validExercise, {
+        blueprint: validBlueprint,
+        environment: mockSupportedEnv,
+        trackedMissionArtifacts: [dirArtifact],
+        requiredPriorArtifacts: [{ identifier: "workspace/report.txt", kind: "file" }],
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.reason).toBe("CONTINUITY_INVALID");
+        expect(res.reasons.some((r) => r.includes("incorrect kind"))).toBe(true);
+      }
+    });
+
+    it("Y. compatible id/identifier + verified=true => PASS", () => {
+      const structuredArtifact: MissionArtifact = {
+        id: "unique-artifact-uuid-99",
+        kind: "file",
+        identifier: "workspace/evidence.dat",
+        verified: true,
+        evidence: "STRONG_INFERENCE",
+      };
+
+      const res = validateAndPublishMissionV2(validExercise, {
+        blueprint: validBlueprint,
+        environment: mockSupportedEnv,
+        trackedMissionArtifacts: [structuredArtifact],
+        requiredPriorArtifacts: [{ identifier: "workspace/evidence.dat", id: "unique-artifact-uuid-99", kind: "file" }],
+      });
+
+      expect(res.ok).toBe(true);
+    });
+
+    it("Z. no continuity dependency => PASS", () => {
+      const res = validateAndPublishMissionV2(validExercise, {
+        blueprint: validBlueprint,
+        environment: mockSupportedEnv,
+      });
+
+      expect(res.ok).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------
+  // 5. Determinism & Bounded Repair Tests
+  // ---------------------------------------------------------
+  describe("Determinism, Repair & Contract Preservation", () => {
+    it("identical input produces identical deterministic validation outcome without timestamps or generated IDs", () => {
+      const run1 = validateAndPublishMissionV2(validExercise, {
+        blueprint: validBlueprint,
+        environment: mockSupportedEnv,
+      });
+
+      const run2 = validateAndPublishMissionV2(validExercise, {
+        blueprint: validBlueprint,
+        environment: mockSupportedEnv,
+      });
+
+      expect(run1.ok).toBe(run2.ok);
+      if (run1.ok && run2.ok) {
+        expect(run1.exercise.id).toBe(run2.exercise.id);
+        expect(run1.contract?.id).toBe(run2.contract?.id);
+        expect(run1.contract?.xpReward).toBe(run2.contract?.xpReward);
+      }
+    });
+
+    it("bounded repair still works for safe structural formatting", () => {
+      const unformattedExercise: AdaptiveExercise = {
+        ...validExercise,
+        title: "   Defensive Workspace Audit   ",
+        difficulty: 2.3,
+        evaluationPlan: {
+          objectives: [
+            {
+              label: "Workspace directory exists",
+              path: "/home/learner/workspace",
+              objectType: "directory",
+              permissions: "750",
+            },
+          ],
+          requiredCommandKinds: [" mkdir ", "CHMOD"],
+        },
+      };
+
+      const res = validateAndPublishMissionV2(unformattedExercise, {
+        blueprint: validBlueprint,
+        environment: mockSupportedEnv,
+      });
+
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        expect(res.repaired).toBe(true);
+        expect(res.repairAttempts).toBe(1);
+        expect(res.exercise.title).toBe("Defensive Workspace Audit");
+        expect(res.exercise.difficulty).toBe(2);
+        expect(res.exercise.evaluationPlan?.objectives[0]?.path).toBe("workspace");
+      }
+    });
+
+    it("deterministic contract preserves prerequisites and previousReferences", () => {
+      const res = validateAndPublishMissionV2(validExercise, {
+        blueprint: validBlueprint,
+        environment: mockSupportedEnv,
+        knownScenarioArtifacts: ["archive/evidence.tar.gz"],
+      });
+
+      expect(res.ok).toBe(true);
+      if (res.ok && res.contract) {
+        expect(res.contract.prerequisites).toEqual(["filesystem"]);
+        expect(res.contract.previousReferences).toEqual(["archive/evidence.tar.gz"]);
+
+        // Verify contract with mock world
+        const mockWorld = new Map();
+        mockWorld.set("workspace", {
+          path: "workspace",
+          objectType: "directory",
+          permissions: "750",
+        });
+
+        const outcome = res.contract.verify(mockWorld as any, {
+          commands: ["mkdir -p workspace", "chmod 750 workspace"],
+          usedLoop: false,
+          operations: 2,
+        } as any);
+
+        expect(outcome.objectives[0]?.met).toBe(true);
+        expect(outcome.skillDemonstrated).toBe(true);
+      }
+    });
   });
 });

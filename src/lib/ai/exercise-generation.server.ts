@@ -81,6 +81,23 @@ function planIsSafe(exercise: AdaptiveExercise): string[] {
   }
   if ((plan.minimumMutations ?? 0) < 0 || (plan.minimumMutations ?? 0) > 100)
     reasons.push("Mutation requirement is outside the safe range.");
+  const validCapabilities = new Set([
+    "interactiveShell",
+    "streaming",
+    "resize",
+    "processes",
+    "services",
+    "environmentVariables",
+    "network",
+    "snapshots",
+    "pauseResume",
+    "packages",
+  ]);
+  for (const cap of plan.requiredCapabilities ?? []) {
+    if (!validCapabilities.has(cap)) {
+      reasons.push(`Invalid evaluation plan capability requirement: ${cap}`);
+    }
+  }
   return reasons;
 }
 

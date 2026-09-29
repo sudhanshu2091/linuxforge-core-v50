@@ -14,9 +14,9 @@
  *   ↓
  * Gate 5: DIFFICULTY VALIDATE (bounds and blueprint alignment)
  *   ↓
- * Gate 6: PREREQUISITE VALIDATE (deterministic validation using SKILL_GRAPH)
+ * Gate 6: PREREQUISITE VALIDATE (strict canonical set matching using SKILL_GRAPH)
  *   ↓
- * Gate 7: CONTINUITY VALIDATE (generic scenario artifact & context validation)
+ * Gate 7: CONTINUITY VALIDATE (structured MissionArtifact semantics & verification check)
  *   ↓
  * BOUNDED REPAIR OR REJECT (max 2 deterministic structural repair attempts)
  *   ↓
@@ -33,7 +33,11 @@ import {
   type GeneratedDefinition,
   type GeneratedEvaluationPlan,
 } from "@/lib/forge/generated-contract.server";
-import type { CanonicalEnvironmentModel, MissionArtifact } from "@/lib/forge/environment/types";
+import type {
+  CanonicalEnvironmentModel,
+  MissionArtifact,
+  MissionArtifactKind,
+} from "@/lib/forge/environment/types";
 import { SKILL_GRAPH, type MissionBlueprint } from "./mission-generator";
 import { validateGeneratedExercise } from "./exercise-generation.server";
 
@@ -64,6 +68,12 @@ export type MissionPublishSuccess = {
 
 export type MissionV2ValidationResult = MissionPublishSuccess | MissionRejection;
 
+export type RequiredPriorArtifactSpec = {
+  identifier: string;
+  id?: string | undefined;
+  kind?: MissionArtifactKind | undefined;
+};
+
 export type MissionV2Context = {
   blueprint?: MissionBlueprint | undefined;
   environment?: CanonicalEnvironmentModel | undefined;
@@ -71,8 +81,8 @@ export type MissionV2Context = {
   knownScenarioArtifacts?: string[] | undefined;
   /** Tracked structured mission artifacts from previous missions or environment */
   trackedMissionArtifacts?: MissionArtifact[] | undefined;
-  /** Explicit list of prior artifact references required by scenario continuity */
-  requiredPriorArtifacts?: string[] | undefined;
+  /** Explicit list of prior artifact references required by scenario continuity (strings or structured specs) */
+  requiredPriorArtifacts?: Array<string | RequiredPriorArtifactSpec> | undefined;
   /** Allowed command kinds known to be supported by the environment */
   supportedCommandKinds?: string[] | undefined;
 };
@@ -140,8 +150,8 @@ function attemptDeterministicRepair(
 
 /**
  * Gate 2: Environment Validation.
- * Validates that the exercise structurally requires only capabilities supported by the environment.
- * Evaluates evaluationPlan, skills, evaluationFocus, and explicit capability needs.
+ * Consumes structured capability requirements directly from evaluationPlan.requiredCapabilities
+ * without maintaining an ad-hoc command -> capability inference dictionary.
  */
 function validateEnvironmentSupport(
   exercise: AdaptiveExercise,
@@ -158,95 +168,29 @@ function validateEnvironmentSupport(
   const caps = env.runtime?.capabilities;
   const net = env.network;
 
-  // Derive structured requirements from evaluationPlan, skills, and evaluationFocus
-  const structuredCommands = new Set(
-    (plan?.requiredCommandKinds ?? []).map((c) => c.toLowerCase().trim()),
-  );
+  // 1. Direct structured capabilities check: read exercise.evaluationPlan.requiredCapabilities
+  const declaredCapabilities = plan?.requiredCapabilities ?? [];
 
-  const evaluationFocusSet = new Set(
-    exercise.evaluationFocus.map((f) => f.toLowerCase().trim()),
-  );
-
-  // 1. Package requirements
-  const requiresPackage =
-    structuredCommands.has("apt") ||
-    structuredCommands.has("apt-get") ||
-    structuredCommands.has("dpkg") ||
-    evaluationFocusSet.has("package") ||
-    evaluationFocusSet.has("package installation") ||
-    evaluationFocusSet.has("packages");
-
-  if (requiresPackage) {
-    if (!caps || caps.packages !== true) {
+  for (const cap of declaredCapabilities) {
+    if (!caps || caps[cap] !== true) {
       reasons.push(
-        "Exercise structurally requires package capability, but environment does not support packages.",
+        `Exercise structurally requires capability '${cap}', but environment does not support it (value is ${String(caps ? caps[cap] : undefined)}).`,
       );
     }
   }
 
-  // 2. Service requirements
-  const requiresService =
-    structuredCommands.has("systemctl") ||
-    structuredCommands.has("service") ||
-    evaluationFocusSet.has("service") ||
-    evaluationFocusSet.has("services") ||
-    evaluationFocusSet.has("service management");
+  // 2. Network isolation check:
+  // If network is explicitly required or exercised, and external network is needed while isolation is enforced
+  const requiresNetwork = declaredCapabilities.includes("network");
+  const requiresExternal =
+    exercise.evaluationFocus.some((f) => f.toLowerCase().includes("external network")) ||
+    exercise.title.toLowerCase().includes("external network") ||
+    exercise.objective.toLowerCase().includes("external network");
 
-  if (requiresService) {
-    if (!caps || caps.services !== true) {
-      reasons.push(
-        "Exercise structurally requires service capability, but environment does not support services.",
-      );
-    }
-  }
-
-  // 3. Process requirements
-  const requiresProcess =
-    structuredCommands.has("ps") ||
-    structuredCommands.has("kill") ||
-    structuredCommands.has("pkill") ||
-    structuredCommands.has("top") ||
-    structuredCommands.has("htop") ||
-    evaluationFocusSet.has("process") ||
-    evaluationFocusSet.has("processes") ||
-    evaluationFocusSet.has("process control");
-
-  if (requiresProcess) {
-    if (!caps || caps.processes !== true) {
-      reasons.push(
-        "Exercise structurally requires process capability, but environment does not support processes.",
-      );
-    }
-  }
-
-  // 4. Network requirements
-  const requiresNetwork =
-    exercise.skills.includes("networking") ||
-    structuredCommands.has("ping") ||
-    structuredCommands.has("curl") ||
-    structuredCommands.has("nmap") ||
-    structuredCommands.has("nc") ||
-    evaluationFocusSet.has("network") ||
-    evaluationFocusSet.has("networking") ||
-    evaluationFocusSet.has("external network");
-
-  if (requiresNetwork) {
-    if (!caps || caps.network !== true) {
-      reasons.push(
-        "Exercise structurally requires networking capability, but environment does not support network operations.",
-      );
-    }
-    // Check network isolation if external network is required
-    const requiresExternal =
-      evaluationFocusSet.has("external network") ||
-      exercise.title.toLowerCase().includes("external") ||
-      exercise.objective.toLowerCase().includes("external");
-
-    if (net && net.networkIsolationEnforced && requiresExternal) {
-      reasons.push(
-        "Exercise attempts external network connection, but environment enforces strict network isolation.",
-      );
-    }
+  if (requiresNetwork && requiresExternal && net && net.networkIsolationEnforced === true) {
+    reasons.push(
+      "Exercise attempts external network connection, but environment enforces strict network isolation.",
+    );
   }
 
   return {
@@ -403,40 +347,81 @@ function validateDifficulty(
 }
 
 /**
- * Gate 6: Prerequisite Validation using SKILL_GRAPH.
- * Deterministically verifies prerequisite relationships against the canonical SKILL_GRAPH.
+ * Gate 6: Prerequisite Validation using Strict Canonical Set Matching.
+ * Expected prerequisites = union of SKILL_GRAPH[primarySkill] and SKILL_GRAPH[supportingSkill] for all supportingSkills.
+ * Uses exact set equality: all expected must be present, no extras, no invalid SkillIds, no self-reference.
  */
 function validatePrerequisites(
   exercise: AdaptiveExercise,
   blueprint?: MissionBlueprint,
 ): { valid: boolean; reasons: string[] } {
   const reasons: string[] = [];
+  if (!blueprint) return { valid: true, reasons: [] };
+
   const validSkills = new Set<SkillId>(Object.keys(SKILL_GRAPH) as SkillId[]);
 
-  if (blueprint?.prerequisites && blueprint.prerequisites.length > 0) {
-    for (const prereq of blueprint.prerequisites) {
-      // 1. Check if prerequisite skill is a valid registered SkillId in SKILL_GRAPH
-      if (!validSkills.has(prereq)) {
-        reasons.push(`Invalid prerequisite skill '${prereq}' is not registered in the skill graph.`);
-        continue;
-      }
+  // 1. Verify primary skill and supporting skills are valid SkillIds
+  if (!validSkills.has(blueprint.primarySkill)) {
+    reasons.push(`Invalid primary skill '${blueprint.primarySkill}' is not registered in the skill graph.`);
+    return { valid: false, reasons };
+  }
 
-      // 2. Check for self/circular reference
-      if (prereq === blueprint.primarySkill) {
-        reasons.push(`Circular prerequisite: primary skill '${prereq}' cannot be its own prerequisite.`);
-      }
+  for (const s of blueprint.supportingSkills ?? []) {
+    if (!validSkills.has(s)) {
+      reasons.push(`Invalid supporting skill '${s}' is not registered in the skill graph.`);
+    }
+  }
+
+  // 2. Compute canonical expected prerequisite set = union of SKILL_GRAPH[primary] + SKILL_GRAPH[supporting]
+  const expectedSet = new Set<SkillId>();
+  for (const prereq of SKILL_GRAPH[blueprint.primarySkill] ?? []) {
+    expectedSet.add(prereq);
+  }
+  for (const supporting of blueprint.supportingSkills ?? []) {
+    for (const prereq of SKILL_GRAPH[supporting] ?? []) {
+      expectedSet.add(prereq);
+    }
+  }
+
+  // 3. Inspect blueprint.prerequisites
+  const actualPrereqs = blueprint.prerequisites ?? [];
+  const actualSet = new Set<SkillId>();
+
+  for (const p of actualPrereqs) {
+    // Check valid SkillId
+    if (!validSkills.has(p)) {
+      reasons.push(`Invalid prerequisite skill '${p}' is not registered in the skill graph.`);
+      continue;
     }
 
-    // 3. Verify that if SKILL_GRAPH specifies prerequisites for primarySkill,
-    // the blueprint's prerequisites do not contradict or omit required graph relationships.
-    const graphPrereqs = SKILL_GRAPH[blueprint.primarySkill] ?? [];
-    if (graphPrereqs.length > 0) {
-      const hasGraphPrereq = blueprint.prerequisites.some((p) => graphPrereqs.includes(p));
-      if (!hasGraphPrereq) {
-        reasons.push(
-          `Blueprint prerequisites do not satisfy canonical skill graph prerequisites [${graphPrereqs.join(", ")}] for primary skill '${blueprint.primarySkill}'.`,
-        );
-      }
+    // Check self-reference
+    if (p === blueprint.primarySkill) {
+      reasons.push(`Circular prerequisite: primary skill '${p}' cannot be its own prerequisite.`);
+    }
+
+    // Check duplicate
+    if (actualSet.has(p)) {
+      reasons.push(`Duplicate prerequisite detected: '${p}'.`);
+    }
+
+    actualSet.add(p);
+  }
+
+  // 4. Set equality check: missing required prerequisites
+  for (const expected of expectedSet) {
+    if (!actualSet.has(expected)) {
+      reasons.push(
+        `Missing canonical prerequisite '${expected}' required for primary skill '${blueprint.primarySkill}' or supporting skills.`,
+      );
+    }
+  }
+
+  // 5. Set equality check: unexpected extra prerequisites
+  for (const actual of actualSet) {
+    if (!expectedSet.has(actual)) {
+      reasons.push(
+        `Unexpected extra prerequisite '${actual}' outside the canonical derived prerequisite set for '${blueprint.primarySkill}'.`,
+      );
     }
   }
 
@@ -444,60 +429,71 @@ function validatePrerequisites(
 }
 
 /**
- * Gate 7: Continuity Validation (Generic).
- * Uses structured scenario artifacts and requiredPriorArtifacts instead of hardcoded names.
+ * Gate 7: Continuity Validation (Structured MissionArtifact Semantics).
+ * Preserves structured MissionArtifact properties: identifier, id, kind, verified === true,
+ * and reliable evidence level (rejects UNKNOWN / POSSIBLE_INTERPRETATION).
  */
 function validateContinuity(
   exercise: AdaptiveExercise,
   context?: MissionV2Context,
 ): { valid: boolean; reasons: string[] } {
   const reasons: string[] = [];
-  const plan = exercise.evaluationPlan;
 
-  // Build a generic set of available/known scenario artifacts
-  const knownArtifacts = new Set<string>();
-
-  if (context?.knownScenarioArtifacts) {
-    for (const art of context.knownScenarioArtifacts) {
-      knownArtifacts.add(art.trim());
-    }
+  // If there are no required prior artifacts and no scenario continuity dependency, pass neutral
+  const requiredArtifacts = context?.requiredPriorArtifacts ?? [];
+  if (requiredArtifacts.length === 0) {
+    return { valid: true, reasons: [] };
   }
+
+  // Collect available structured MissionArtifacts
+  const availableArtifacts: MissionArtifact[] = [];
 
   if (context?.trackedMissionArtifacts) {
-    for (const art of context.trackedMissionArtifacts) {
-      knownArtifacts.add(art.identifier.trim());
-      knownArtifacts.add(art.id.trim());
-    }
+    availableArtifacts.push(...context.trackedMissionArtifacts);
   }
-
   if (context?.environment?.artifacts) {
-    for (const art of context.environment.artifacts) {
-      knownArtifacts.add(art.identifier.trim());
-      knownArtifacts.add(art.id.trim());
-    }
+    availableArtifacts.push(...context.environment.artifacts);
   }
 
-  // 1. Check requiredPriorArtifacts in context: any artifact explicitly required by scenario must exist in known context
-  if (context?.requiredPriorArtifacts && context.requiredPriorArtifacts.length > 0) {
-    for (const requiredArt of context.requiredPriorArtifacts) {
-      if (!knownArtifacts.has(requiredArt)) {
-        reasons.push(
-          `Scenario continuity requirement '${requiredArt}' is absent from supplied scenario context.`,
-        );
-      }
-    }
-  }
+  // Validate each required artifact reference
+  for (const req of requiredArtifacts) {
+    const targetIdentifier = typeof req === "string" ? req : req.identifier;
+    const targetId = typeof req === "string" ? undefined : req.id;
+    const targetKind = typeof req === "string" ? undefined : req.kind;
 
-  // 2. Check evaluation objectives for explicit prior artifact dependencies
-  if (plan?.objectives) {
-    for (const obj of plan.objectives) {
-      if (context?.requiredPriorArtifacts && context.requiredPriorArtifacts.includes(obj.path)) {
-        if (!knownArtifacts.has(obj.path)) {
-          reasons.push(
-            `Objective path '${obj.path}' requires prior scenario artifact which is absent from scenario context.`,
-          );
-        }
-      }
+    // Find matching structured artifact by identifier or id
+    const match = availableArtifacts.find((art) => {
+      if (targetId && art.id === targetId) return true;
+      if (art.identifier === targetIdentifier) return true;
+      return false;
+    });
+
+    if (!match) {
+      reasons.push(
+        `Required prior scenario artifact '${targetIdentifier}' is absent from structured scenario context.`,
+      );
+      continue;
+    }
+
+    // Kind verification if explicitly specified
+    if (targetKind && match.kind !== targetKind) {
+      reasons.push(
+        `Artifact '${targetIdentifier}' matches identifier but has incorrect kind '${match.kind}' (expected '${targetKind}').`,
+      );
+    }
+
+    // Verification check: must be explicitly verified
+    if (match.verified !== true) {
+      reasons.push(
+        `Required prior scenario artifact '${targetIdentifier}' is present but not verified (verified=false).`,
+      );
+    }
+
+    // Evidence check: must not be UNKNOWN or POSSIBLE_INTERPRETATION
+    if (match.evidence === "UNKNOWN" || match.evidence === "POSSIBLE_INTERPRETATION") {
+      reasons.push(
+        `Artifact '${targetIdentifier}' evidence level '${match.evidence}' is insufficient for authoritative scenario continuity.`,
+      );
     }
   }
 
