@@ -28,6 +28,8 @@ import {
   updateSkillMemory,
 } from "./persistence.server";
 import { buildAdaptiveMissionCandidate } from "@/lib/ai/adaptive-mission-bridge";
+import { buildMissionBlueprint } from "@/lib/ai/mission-generator";
+import { aiMissionGenerationService } from "@/lib/ai/ai-service.server";
 
 export { persistValidatedAdaptiveMission } from "./persistence.server";
 import { aiObserver } from "./observer.server";
@@ -46,6 +48,7 @@ import { buildGuidedHint } from "@/lib/ai/hint-engine";
 import type { ObservationCategory as HintObservationCategory } from "@/lib/forge/types";
 import { redactLines, redactText } from "@/lib/security-redaction";
 import type {
+  AdaptiveExercise,
   ObservationCategory,
   AttemptView,
   MissionState,
@@ -1534,6 +1537,32 @@ export async function assessMission(
 
       const recentMistakes = assessment.mistakeBreakdown.map((m) => m.category);
 
+      let aiCandidateExercise: AdaptiveExercise | undefined = undefined;
+      try {
+        const trainingDecision = enrichedAssessment.trainingDecision as TrainingDecision;
+        const blueprint = buildMissionBlueprint({
+          skills,
+          intelligence: analyzeLearner(skills, recentMistakes),
+          recentMistakes,
+          storyObjects,
+          currentDifficulty: contract.difficulty,
+          trainingDecision,
+        });
+        const { response, fallbackUsed } = await aiMissionGenerationService({
+          trainingDecision,
+          blueprint,
+          skills,
+          recentMistakes,
+          knownScenarioArtifacts,
+          difficulty: contract.difficulty,
+        });
+        if (!fallbackUsed && response?.exercise) {
+          aiCandidateExercise = response.exercise;
+        }
+      } catch {
+        // AI proposal generation failure safely swallowed; buildAdaptiveMissionCandidate will use deterministic candidate
+      }
+
       const candidate = buildAdaptiveMissionCandidate({
         skills,
         trainingDecision: enrichedAssessment.trainingDecision,
@@ -1547,6 +1576,7 @@ export async function assessMission(
         storyObjects,
         currentDifficulty: contract.difficulty,
         knownScenarioArtifacts,
+        candidateExercise: aiCandidateExercise,
       });
 
       if (candidate.validation.ok && candidate.contract && candidate.exercise) {
