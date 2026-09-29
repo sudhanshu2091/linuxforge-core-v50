@@ -1397,6 +1397,31 @@ export async function assessMission(
     progression,
   };
 
+  const existingAssessmentEvents = events.filter((e) => e.kind === "assessment");
+  const lastAssessmentEvent =
+    existingAssessmentEvents.length > 0
+      ? existingAssessmentEvents[existingAssessmentEvents.length - 1]
+      : null;
+
+  if (lastAssessmentEvent) {
+    const lastPayload = asRecord(lastAssessmentEvent.payload);
+    const isEquivalent =
+      (lastPayload["status"] === "COMPLETE" && assessment.status === "COMPLETE") ||
+      (lastPayload["status"] === assessment.status &&
+        lastPayload["grade"] === assessment.grade &&
+        lastPayload["objectivesMet"] === assessment.objectivesMet &&
+        lastPayload["objectivesTotal"] === assessment.objectivesTotal &&
+        lastPayload["learningSignal"] === enrichedAssessment.learningSignal);
+
+    if (isEquivalent) {
+      const existingTrainingDecision = lastPayload["trainingDecision"] as TrainingDecision | undefined;
+      return {
+        ...enrichedAssessment,
+        ...(existingTrainingDecision ? { trainingDecision: existingTrainingDecision } : {}),
+      };
+    }
+  }
+
   await appendChallengeEvents(db, userId, challengeId, [
     {
       kind: "assessment",
@@ -1566,25 +1591,27 @@ export async function runLabCommand(
 
   if (xpAwarded > 0) await awardProgressionXp(db, userId, xpAwarded);
 
-  if (!execution.blocked && (nowComplete || execution.mutationCount > 0)) {
+  const justCompleted = nowComplete && !alreadyComplete;
+
+  if (!execution.blocked && (justCompleted || (!alreadyComplete && execution.mutationCount > 0))) {
     await appendNarrativeEvent(db, {
       userId,
       challengeId,
-      eventType: nowComplete ? "mission_complete" : "world_change",
-      summary: nowComplete
+      eventType: justCompleted ? "mission_complete" : "world_change",
+      summary: justCompleted
         ? `${contract.title} completed — ${contract.successStory}`
         : `Worked in the lab during ${contract.title}: ${execution.evidence.commands
             .slice(0, 3)
             .map((command) => redactText(command).text)
             .join("; ")}`,
       relatedSkillIds: contract.requiredSkills,
-      importance: nowComplete ? 4 : 2,
+      importance: justCompleted ? 4 : 2,
     });
   }
 
-  if (!execution.blocked) {
+  if (!execution.blocked && !alreadyComplete) {
     await updateSkillMemory(db, userId, contract.requiredSkills, {
-      complete: nowComplete && !alreadyComplete,
+      complete: nowComplete,
       score: verification.score,
       hintsUsed,
       mistake: observation.category && !nowComplete ? observation.category : null,

@@ -693,3 +693,10 @@ export function validateAndPublishMissionV2(
     repairAttempts,
   };
 }
+
+export {
+  buildAdaptiveMissionCandidate,
+  type AdaptiveMissionBridgeInput,
+  type AdaptiveMissionCandidateResult,
+} from "./adaptive-mission-bridge";
+
