@@ -44,7 +44,10 @@ import type { MissionAssessment } from "@/lib/forge/assessment.server";
 export type AdaptiveMissionBridgeInput = {
   skills: readonly SkillMemoryView[];
   intelligence?: LearnerIntelligence | undefined;
-  trainingDecision?: TrainingDecision | undefined;
+  trainingDecision?:
+    | TrainingDecision
+    | NonNullable<import("@/lib/forge/types").MissionState["trainingDecision"]>
+    | undefined;
   assessment?:
     | Pick<
         MissionAssessment,
@@ -202,14 +205,26 @@ export function buildAdaptiveMissionCandidate(
   const intelligence =
     input.intelligence ?? analyzeLearner(input.skills, mistakeList);
 
-  const trainingDecision =
-    input.trainingDecision ??
-    selectAdaptiveTraining({
-      skills: input.skills,
-      intelligence,
-      ...(input.assessment !== undefined ? { assessment: input.assessment } : {}),
-      currentDifficulty: input.currentDifficulty ?? 1,
-    });
+  const rawDecision = input.trainingDecision;
+  const trainingDecision: TrainingDecision =
+    rawDecision && "sourceStrategy" in rawDecision && rawDecision.sourceStrategy
+      ? (rawDecision as TrainingDecision)
+      : rawDecision
+        ? {
+            ...rawDecision,
+            version: "v37" as const,
+            sourceStrategy: (rawDecision.sourceStrategy as TrainingDecision["sourceStrategy"]) ?? "targeted-patterns",
+            masteryGate: (rawDecision.masteryGate as TrainingDecision["masteryGate"]) ?? "PRACTICE",
+            journeyPhase: rawDecision.journeyPhase ?? "ACTIVE_TRAINING",
+            journeyNextSkills: rawDecision.journeyNextSkills ? [...rawDecision.journeyNextSkills] : [],
+            focusMistakes: rawDecision.focusMistakes ? [...rawDecision.focusMistakes] : [],
+          }
+        : selectAdaptiveTraining({
+            skills: input.skills,
+            intelligence,
+            ...(input.assessment !== undefined ? { assessment: input.assessment } : {}),
+            currentDifficulty: input.currentDifficulty ?? 1,
+          });
 
   const rawBlueprint = buildMissionBlueprint({
     skills: input.skills,

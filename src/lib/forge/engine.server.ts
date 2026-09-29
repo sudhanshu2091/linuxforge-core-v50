@@ -22,10 +22,14 @@ import {
   appendChallengeEvents,
   appendNarrativeEvent,
   awardProgressionXp,
+  persistValidatedAdaptiveMission,
   recordHintUsage,
   saveAttempt,
   updateSkillMemory,
 } from "./persistence.server";
+import { buildAdaptiveMissionCandidate } from "@/lib/ai/adaptive-mission-bridge";
+
+export { persistValidatedAdaptiveMission } from "./persistence.server";
 import { aiObserver } from "./observer.server";
 import {
   buildMissionAssessment,
@@ -401,8 +405,24 @@ export function pickNext(
     ]),
   );
 
-  const done = (id: string): boolean =>
-    byId.get(id)?.status === "COMPLETE";
+  const done = (id: string): boolean => {
+    if (byId.get(id)?.status === "COMPLETE") return true;
+    if (isSkillId(id)) {
+      const hasCompletedMissionWithSkill = safeAttempts.some(
+        (a) =>
+          a.status === "COMPLETE" &&
+          (contractById(a.challenge_id)?.requiredSkills.includes(id) ||
+            safeGeneratedContracts
+              .find((g) => g.id === a.challenge_id)
+              ?.requiredSkills.includes(id)),
+      );
+      const hasSkillMastery = safeSkills.some(
+        (s) => s.skillId === id && ((s.successfulAttempts ?? 0) > 0 || s.mastery >= 60),
+      );
+      return hasCompletedMissionWithSkill || hasSkillMastery;
+    }
+    return false;
+  };
 
   let desiredDifficulty = 1;
   let focusSkills: SkillId[] = [];
@@ -528,9 +548,13 @@ export function pickNext(
       2 - order / 100,
     );
 
+    const isGenerated = safeGeneratedContracts.some((g) => g.id === contract.id);
+    const adaptiveBonus = isGenerated ? 50 : 0;
+
     return {
       contract,
       score:
+        adaptiveBonus +
         primaryBonus +
         skillMatch * 10 +
         difficultyScore +
@@ -560,23 +584,71 @@ export async function startOrRestoreMission(
   requestedId?: string,
 ): Promise<{ challengeId: string; resumed: boolean }> {
   await ensureLab(db, userId);
-  const attempts = await loadAttempts(db, userId);
-  const done = (id: string) => attempts.find((a) => a.challenge_id === id)?.status === "COMPLETE";
-
+  const [attempts, skills] = await Promise.all([
+    loadAttempts(db, userId),
+    loadSkills(db, userId),
+  ]);
   const generated = await loadGeneratedExercises(db, userId);
+
+  const done = (id: string): boolean => {
+    if (attempts.find((a) => a.challenge_id === id)?.status === "COMPLETE") {
+      return true;
+    }
+    if (isSkillId(id)) {
+      const hasCompletedMissionWithSkill = attempts.some(
+        (a) =>
+          a.status === "COMPLETE" &&
+          (contractById(a.challenge_id)?.requiredSkills.includes(id) ||
+            generated.find((g) => g.id === a.challenge_id)?.requiredSkills.includes(id)),
+      );
+      const hasSkillMastery = skills.some(
+        (s) => s.skillId === id && ((s.successfulAttempts ?? 0) > 0 || s.mastery >= 60),
+      );
+      return hasCompletedMissionWithSkill || hasSkillMastery;
+    }
+    return false;
+  };
   let challengeId =
     requestedId && (contractById(requestedId) || generated.some((c) => c.id === requestedId))
       ? requestedId
       : null;
   if (!challengeId) {
-    // Story position: the earliest unlocked, unfinished mission.
-    const inProgress = CONTRACTS.find(
-      (c) => !done(c.id) && attempts.some((a) => a.challenge_id === c.id),
+    // 1. Resume existing incomplete mission: check generated/adaptive first, then static
+    const inProgressGenerated = generated.find(
+      (c) => !done(c.id) && attempts.some((a) => a.challenge_id === c.id && a.status !== "COMPLETE"),
     );
-    const nextOpen = CONTRACTS.filter((c) => !done(c.id) && c.prerequisites.every(done)).sort(
-      (a, b) => a.order - b.order,
-    )[0];
-    challengeId = inProgress?.id ?? nextOpen?.id ?? generated[0]?.id ?? CONTRACTS[0]!.id;
+    const inProgressStatic = CONTRACTS.find(
+      (c) => !done(c.id) && attempts.some((a) => a.challenge_id === c.id && a.status !== "COMPLETE"),
+    );
+    const inProgress = inProgressGenerated ?? inProgressStatic;
+
+    if (inProgress) {
+      challengeId = inProgress.id;
+    } else {
+      // 2. Prioritize valid uncompleted adaptive generated missions whose prerequisites are satisfied
+      const openGenerated = generated.filter(
+        (c) => !done(c.id) && c.prerequisites.every(done),
+      );
+
+      const nextOpenStatic = CONTRACTS.filter(
+        (c) => !done(c.id) && c.prerequisites.every(done),
+      ).sort((a, b) => a.order - b.order)[0];
+
+      const nextFromPick = pickNext(
+        attempts,
+        skills,
+        "",
+        openGenerated,
+      );
+
+      challengeId =
+        (nextFromPick && openGenerated.some((g) => g.id === nextFromPick)
+          ? nextFromPick
+          : null) ??
+        openGenerated[0]?.id ??
+        nextOpenStatic?.id ??
+        CONTRACTS[0]!.id;
+    }
   }
 
   const selectedContract =
@@ -1442,6 +1514,48 @@ export async function assessMission(
       },
     },
   ]);
+
+  if (enrichedAssessment.trainingDecision) {
+    try {
+      let knownScenarioArtifacts: string[] = [];
+      let storyObjects: string[] = [];
+      try {
+        const lab = await ensureLab(db, userId);
+        if (lab?.id) {
+          const { views } = await loadWorld(db, userId, lab.id);
+          if (Array.isArray(views)) {
+            knownScenarioArtifacts = views.map((v) => v.path);
+            storyObjects = views.map((v) => v.name);
+          }
+        }
+      } catch {
+        // lab/world is optional
+      }
+
+      const recentMistakes = assessment.mistakeBreakdown.map((m) => m.category);
+
+      const candidate = buildAdaptiveMissionCandidate({
+        skills,
+        trainingDecision: enrichedAssessment.trainingDecision,
+        assessment: {
+          learningSignal: enrichedAssessment.learningSignal,
+          grade: assessment.grade,
+          hintsUsed: hints.length,
+          mistakeBreakdown: assessment.mistakeBreakdown,
+        },
+        recentMistakes,
+        storyObjects,
+        currentDifficulty: contract.difficulty,
+        knownScenarioArtifacts,
+      });
+
+      if (candidate.validation.ok && candidate.contract && candidate.exercise) {
+        await persistValidatedAdaptiveMission(db, userId, candidate);
+      }
+    } catch (materializeError) {
+      console.error("[LinuxForge engine] materializeAdaptiveMission failed", materializeError);
+    }
+  }
 
   return enrichedAssessment;
 }

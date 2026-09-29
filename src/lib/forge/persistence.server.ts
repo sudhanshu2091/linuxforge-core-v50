@@ -9,6 +9,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/integrations/supabase/types";
 import type { SkillId, VerificationStatus } from "./types";
 import { calculateSkillUpdate } from "@/lib/learner/learner-model";
+import type { Contract } from "./contracts.server";
+import type { GeneratedDefinition, GeneratedEvaluationPlan } from "./generated-contract.server";
+import type { AdaptiveMissionCandidateResult } from "@/lib/ai/adaptive-mission-bridge";
 
 type Db = SupabaseClient<Database>;
 type AttemptRow = Database["public"]["Tables"]["learner_challenge_attempts"]["Row"];
@@ -203,4 +206,121 @@ export async function appendNarrativeEvent(
     importance: input.importance,
   });
   if (result.error) throw new Error(result.error.message);
+}
+
+export type PersistAdaptiveResult = {
+  materialized: boolean;
+  challengeId?: string | undefined;
+  resumed?: boolean | undefined;
+  reason?: string | undefined;
+  contract?: Contract | undefined;
+};
+
+/**
+ * Idempotently persist a validated adaptive mission into generated_exercises.
+ *
+ * Enforces:
+ * 1. candidate.validation.ok === true
+ * 2. candidate.contract exists
+ * 3. candidate.exercise exists
+ *
+ * Never persists unvalidated or rejected candidates.
+ */
+export async function persistValidatedAdaptiveMission(
+  db: Db,
+  userId: string,
+  candidateResult: AdaptiveMissionCandidateResult,
+): Promise<PersistAdaptiveResult> {
+  if (
+    !candidateResult.validation.ok ||
+    !candidateResult.contract ||
+    !candidateResult.exercise
+  ) {
+    return {
+      materialized: false,
+      reason: "candidate_not_validated",
+    };
+  }
+
+  const { exercise, contract, blueprint, trainingDecision } = candidateResult;
+
+  // Idempotent lookup: ensure existing mission is reused
+  const existing = await db
+    .from("generated_exercises")
+    .select("id, definition")
+    .eq("user_id", userId)
+    .eq("id", exercise.id)
+    .maybeSingle();
+
+  if (existing.error) {
+    throw new Error(`Failed to check existing generated exercise: ${existing.error.message}`);
+  }
+
+  if (existing.data?.id) {
+    return {
+      materialized: true,
+      challengeId: existing.data.id,
+      resumed: true,
+      contract,
+    };
+  }
+
+  const prerequisites = contract.prerequisites ?? blueprint.prerequisites ?? [];
+  const previousReferences = contract.previousReferences ?? [];
+
+  const definition: GeneratedDefinition = {
+    id: exercise.id,
+    kind: exercise.kind ?? "mission",
+    title: exercise.title,
+    scenario: exercise.scenario,
+    objective: exercise.objective,
+    skills: [...exercise.skills],
+    difficulty: exercise.difficulty,
+    estimatedMinutes: exercise.estimatedMinutes,
+    sourceRefs: [...exercise.sourceRefs],
+    evaluationFocus: [...exercise.evaluationFocus],
+    learnerReason: exercise.learnerReason,
+    allowedApproaches: exercise.allowedApproaches ? [...exercise.allowedApproaches] : [],
+    bannedShortcuts: exercise.bannedShortcuts ? [...exercise.bannedShortcuts] : [],
+    hints: exercise.hints ? [...exercise.hints] : [],
+    successStory: exercise.successStory ?? "",
+    failureStory: exercise.failureStory ?? "",
+    remediation: exercise.remediation ? [...exercise.remediation] : [],
+    evaluationPlan: exercise.evaluationPlan as unknown as GeneratedEvaluationPlan,
+    prerequisites: [...prerequisites],
+    previousReferences: [...previousReferences],
+    trainingDecision: trainingDecision as unknown as Record<string, unknown>,
+    blueprint: blueprint as unknown as Record<string, unknown>,
+  };
+
+  const payload = {
+    id: exercise.id,
+    user_id: userId,
+    kind: exercise.kind ?? "mission",
+    title: exercise.title,
+    definition: toJson(definition),
+  };
+
+  const insertRes = await db.from("generated_exercises").insert(payload);
+  if (insertRes.error) {
+    if (
+      `${insertRes.error.message}`.toLowerCase().includes("duplicate") ||
+      insertRes.error.code === "23505"
+    ) {
+      return {
+        materialized: true,
+        challengeId: exercise.id,
+        resumed: true,
+        contract,
+      };
+    }
+    throw new Error(`Failed to materialize adaptive mission: ${insertRes.error.message}`);
+  }
+
+  return {
+    materialized: true,
+    challengeId: exercise.id,
+    resumed: false,
+    contract,
+  };
 }

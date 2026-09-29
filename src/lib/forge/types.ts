@@ -227,6 +227,12 @@ export type MissionState = {
     evidence: string[];
     focusMistakes?: ObservationCategory[];
     constraints: string[];
+    sourceStrategy?:
+      | "targeted-patterns"
+      | "review-patterns"
+      | "transfer-patterns"
+      | "progression-patterns"
+      | undefined;
     masteryGate?: string;
     journeyPhase?: string;
     journeyNextSkills?: SkillId[];
