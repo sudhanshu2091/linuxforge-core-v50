@@ -96,7 +96,13 @@ const safePlan = (plan: GeneratedEvaluationPlan): GeneratedEvaluationPlan | null
   };
 };
 
-export function generatedDefinitionToContract(definition: GeneratedDefinition): Contract {
+export function generatedDefinitionToContract(
+  definition: GeneratedDefinition,
+  options?: {
+    prerequisites?: string[];
+    previousReferences?: string[];
+  },
+): Contract {
   const plan = safePlan(definition.evaluationPlan);
   if (!plan) throw new Error("Generated exercise has an invalid evaluation plan.");
   const requiredSkills = definition.skills.length
@@ -113,8 +119,8 @@ export function generatedDefinitionToContract(definition: GeneratedDefinition): 
     allowedApproaches: definition.allowedApproaches,
     bannedShortcuts: definition.bannedShortcuts,
     difficulty: definition.difficulty,
-    prerequisites: [],
-    previousReferences: [],
+    prerequisites: options?.prerequisites ? [...options.prerequisites] : [],
+    previousReferences: options?.previousReferences ? [...options.previousReferences] : [],
     contextRequirements: [
       "learner_level",
       "current_lab_state",
