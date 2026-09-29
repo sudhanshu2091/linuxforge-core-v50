@@ -3,6 +3,7 @@ import { redactText } from "@/lib/security-redaction";
 import { retrieveKnowledge } from "./knowledge-base";
 import { decideTeachingStrategy } from "./teaching-engine";
 import { analyzeLearner } from "./learner-intelligence";
+import { selectAdaptiveTraining } from "./adaptive-training";
 
 /**
  * Bounded, learner-safe context for the mission tutor.
@@ -49,6 +50,15 @@ export type MissionTutorContext = {
       sourceRefs: { id: string; name: string; url: string }[];
     }[];
   };
+  adaptive?: {
+    mode: string;
+    primarySkill: string;
+    supportingSkills: string[];
+    difficulty: number;
+    reason: string;
+    constraints: string[];
+    focusMistakes?: string[];
+  };
 };
 
 const bounded = (text: string, max: number) => text.slice(0, max);
@@ -87,6 +97,28 @@ export function buildMissionTutorContext(state: MissionState): MissionTutorConte
     objective: state.challenge.objective,
     currentTerminalState: recentTerminal.join(" "),
   });
+
+  const adaptiveDecision =
+    state.trainingDecision ??
+    selectAdaptiveTraining({
+      skills: state.skills,
+      intelligence,
+      assessment: state.lastVerification
+        ? {
+            learningSignal:
+              state.lastVerification.status === "COMPLETE" ? "mastered" : "needs_practice",
+            grade: state.lastVerification.score,
+            mistakeBreakdown:
+              latestMistake &&
+              latestMistake !== "VALID_ALTERNATIVE" &&
+              latestMistake !== "INDEPENDENT_SOLUTION"
+                ? [{ category: latestMistake, count: 1 }]
+                : [],
+            hintsUsed: state.hints.length,
+          }
+        : null,
+      currentDifficulty: state.challenge.difficulty,
+    });
 
   return {
     mission: {
@@ -138,6 +170,17 @@ export function buildMissionTutorContext(state: MissionState): MissionTutorConte
         diagnostic: bounded(card.diagnostic, 500),
         sourceRefs: card.sourceRefs,
       })),
+    },
+    adaptive: {
+      mode: adaptiveDecision.mode,
+      primarySkill: adaptiveDecision.primarySkill,
+      supportingSkills: [...adaptiveDecision.supportingSkills],
+      difficulty: adaptiveDecision.difficulty,
+      reason: bounded(adaptiveDecision.reason, 300),
+      constraints: [...adaptiveDecision.constraints],
+      ...(adaptiveDecision.focusMistakes
+        ? { focusMistakes: adaptiveDecision.focusMistakes.map((m) => String(m)) }
+        : {}),
     },
   };
 }

@@ -36,6 +36,8 @@ import { verify } from "./verifier.server";
 import { SKILL_LABELS } from "./types";
 import { buildAdaptivePlan } from "@/lib/learner/adaptive-plan";
 import { decideProgression } from "@/lib/learner/mastery-engine";
+import { analyzeLearner } from "@/lib/ai/learner-intelligence";
+import { selectAdaptiveTraining, type TrainingDecision } from "@/lib/ai/adaptive-training";
 import { buildGuidedHint } from "@/lib/ai/hint-engine";
 import type { ObservationCategory as HintObservationCategory } from "@/lib/forge/types";
 import { redactLines, redactText } from "@/lib/security-redaction";
@@ -372,11 +374,12 @@ async function loadMissionTranscript(
   return lines.slice(-120);
 }
 
-function pickNext(
+export function pickNext(
   attempts: AttemptRow[],
   skills: SkillMemoryView[],
   currentId: string,
   generatedContracts: Contract[] = [],
+  trainingDecision?: MissionState["trainingDecision"] | TrainingDecision | null,
 ): string | null {
   /*
    * Next-mission selection is advisory.
@@ -403,36 +406,69 @@ function pickNext(
 
   let desiredDifficulty = 1;
   let focusSkills: SkillId[] = [];
+  let preferredPrimary: SkillId | null = null;
 
-  try {
-    const currentContract = contractById(currentId);
+  if (trainingDecision) {
+    desiredDifficulty = trainingDecision.difficulty;
+    preferredPrimary = trainingDecision.primarySkill;
+    focusSkills = [
+      trainingDecision.primarySkill,
+      ...trainingDecision.supportingSkills,
+      ...(trainingDecision.journeyNextSkills ?? []),
+    ];
+  } else {
+    try {
+      const currentContract = contractById(currentId);
+      const mistakeCategories = safeSkills
+        .flatMap((s) => s.recentMistakes)
+        .filter((m): m is ObservationCategory => typeof m === "string");
+      const intelligence = analyzeLearner(safeSkills, mistakeCategories);
+      const computedDecision = selectAdaptiveTraining({
+        skills: safeSkills,
+        intelligence,
+        currentDifficulty: currentContract?.difficulty ?? 1,
+      });
 
-    const plan = buildAdaptivePlan({
-      skills: safeSkills,
-      currentDifficulty: currentContract?.difficulty ?? 1,
-    });
+      desiredDifficulty = computedDecision.difficulty;
+      preferredPrimary = computedDecision.primarySkill;
+      focusSkills = [
+        computedDecision.primarySkill,
+        ...computedDecision.supportingSkills,
+        ...(computedDecision.journeyNextSkills ?? []),
+      ];
+    } catch {
+      try {
+        const currentContract = contractById(currentId);
+        const plan = buildAdaptivePlan({
+          skills: safeSkills,
+          currentDifficulty: currentContract?.difficulty ?? 1,
+        });
 
-    if (
-      plan &&
-      typeof plan === "object" &&
-      Array.isArray(plan.focusSkills)
-    ) {
-      focusSkills = plan.focusSkills.filter(isSkillId);
+        if (
+          plan &&
+          typeof plan === "object" &&
+          Array.isArray(plan.focusSkills)
+        ) {
+          focusSkills = plan.focusSkills.filter(isSkillId);
+        }
+
+        if (
+          plan &&
+          typeof plan === "object" &&
+          typeof plan.desiredDifficulty === "number" &&
+          Number.isFinite(plan.desiredDifficulty)
+        ) {
+          desiredDifficulty = plan.desiredDifficulty;
+        }
+      } catch (fallbackError) {
+        console.error(
+          "[LinuxForge mission-state] adaptive fallback failed in pickNext",
+          fallbackError,
+        );
+        desiredDifficulty = 1;
+        focusSkills = [];
+      }
     }
-
-    if (
-      plan &&
-      typeof plan === "object" &&
-      typeof plan.desiredDifficulty === "number" &&
-      Number.isFinite(plan.desiredDifficulty)
-    ) {
-      desiredDifficulty = plan.desiredDifficulty;
-    }
-  } catch (error) {
-    console.error(
-      "[LinuxForge mission-state] adaptive plan failed in pickNext; using fallback",
-      error,
-    );
   }
 
   const allContracts: Contract[] = [
@@ -476,6 +512,8 @@ function pickNext(
       focus.has(skill),
     ).length;
 
+    const primaryBonus = preferredPrimary && requiredSkills.includes(preferredPrimary) ? 20 : 0;
+
     const difficultyDistance = Math.abs(
       difficulty - desiredDifficulty,
     );
@@ -493,6 +531,7 @@ function pickNext(
     return {
       contract,
       score:
+        primaryBonus +
         skillMatch * 10 +
         difficultyScore +
         orderScore,
@@ -955,6 +994,44 @@ export async function loadMissionState(
     "[LinuxForge mission-state] CHECKPOINT G: before-pickNext",
   );
 
+  let trainingDecision: MissionState["trainingDecision"] = null;
+  try {
+    const mistakeCategories = safeSkills
+      .flatMap((s) => s.recentMistakes)
+      .concat(lastObservation?.category ? [lastObservation.category] : [])
+      .filter((m): m is ObservationCategory => typeof m === "string");
+    const intelligence = analyzeLearner(safeSkills, mistakeCategories);
+    trainingDecision = selectAdaptiveTraining({
+      skills: safeSkills,
+      intelligence,
+      assessment: lastVerification
+        ? {
+            learningSignal:
+              lastVerification.status === "COMPLETE"
+                ? "mastered"
+                : lastVerification.status === "BLOCKED_BY_SAFETY_POLICY"
+                  ? "blocked"
+                  : "needs_practice",
+            grade: lastVerification.score,
+            mistakeBreakdown:
+              lastObservation?.category &&
+              lastObservation.category !== "VALID_ALTERNATIVE" &&
+              lastObservation.category !== "INDEPENDENT_SOLUTION"
+                ? [{ category: lastObservation.category, count: 1 }]
+                : [],
+            hintsUsed: safeHintRows.length,
+          }
+        : null,
+      currentDifficulty: contract.difficulty,
+    });
+  } catch (error) {
+    console.error(
+      "[LinuxForge mission-state] trainingDecision computation failed",
+      error,
+    );
+    trainingDecision = null;
+  }
+
   let nextChallengeId: string | null = null;
 
   try {
@@ -963,6 +1040,7 @@ export async function loadMissionState(
       safeSkills,
       contract.id,
       safeGeneratedContracts,
+      trainingDecision,
     );
 
     console.error(
@@ -1023,6 +1101,8 @@ export async function loadMissionState(
     lastObservation,
 
     nextChallengeId,
+
+    trainingDecision,
   };
 }
 
@@ -1322,6 +1402,7 @@ export async function assessMission(
         masteredSkills: progression.masteredSkills,
         fragileSkills: progression.fragileSkills,
         eligibleNextSkills: progression.eligibleNextSkills,
+        trainingDecision: enrichedAssessment.trainingDecision,
       },
     },
   ]);

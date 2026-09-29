@@ -13,6 +13,8 @@ import type {
   Verification,
 } from "./types";
 import { buildAdaptivePlan } from "@/lib/learner/adaptive-plan";
+import { analyzeLearner } from "@/lib/ai/learner-intelligence";
+import { selectAdaptiveTraining } from "@/lib/ai/adaptive-training";
 
 export type AssessmentCommand = {
   commands: string[];
@@ -60,6 +62,7 @@ export type MissionAssessment = {
   learningSignal: "mastered" | "progressing" | "needs_practice" | "blocked";
   evidenceQuality: NonNullable<MissionAssessmentType["evidenceQuality"]>;
   adaptivePlan: NonNullable<MissionAssessmentType["adaptivePlan"]>;
+  trainingDecision?: NonNullable<MissionAssessmentType["trainingDecision"]>;
 };
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
@@ -185,6 +188,20 @@ export function buildMissionAssessment(input: AssessmentInput): MissionAssessmen
     currentDifficulty: input.contract.difficulty,
   });
 
+  const mistakeCategories = mistakeBreakdown.map((m) => m.category);
+  const intelligence = analyzeLearner(input.skillMemory ?? [], mistakeCategories);
+  const trainingDecision = selectAdaptiveTraining({
+    skills: input.skillMemory ?? [],
+    intelligence,
+    assessment: {
+      learningSignal,
+      grade: clamp(verification?.score ?? 0, 0, 100),
+      hintsUsed: input.hintsUsed,
+      mistakeBreakdown,
+    },
+    currentDifficulty: input.contract.difficulty,
+  });
+
   return {
     grade: clamp(verification?.score ?? 0, 0, 100),
     status,
@@ -205,6 +222,7 @@ export function buildMissionAssessment(input: AssessmentInput): MissionAssessmen
     learningSignal,
     evidenceQuality,
     adaptivePlan,
+    trainingDecision,
   };
 }
 

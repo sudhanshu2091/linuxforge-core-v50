@@ -217,6 +217,20 @@ export type MissionState = {
   lastVerification: Verification | null;
   lastObservation: Observation | null;
   nextChallengeId: string | null;
+  trainingDecision?: {
+    version?: string;
+    mode: "REMEDIATION" | "GUIDED_PRACTICE" | "SPACED_REVIEW" | "TRANSFER" | "PROGRESSION" | "ASSESSMENT";
+    primarySkill: SkillId;
+    supportingSkills: SkillId[];
+    difficulty: number;
+    reason: string;
+    evidence: string[];
+    focusMistakes?: ObservationCategory[];
+    constraints: string[];
+    masteryGate?: string;
+    journeyPhase?: string;
+    journeyNextSkills?: SkillId[];
+  } | null;
 };
 
 export type AdaptiveExercise = {
@@ -302,6 +316,7 @@ export type MissionAssessment = {
     rationale: string;
     learnerMessage: string;
   };
+  trainingDecision?: NonNullable<MissionState["trainingDecision"]>;
 };
 
 export type RunResult = {
