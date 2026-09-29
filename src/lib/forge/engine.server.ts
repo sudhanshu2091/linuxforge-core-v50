@@ -996,34 +996,45 @@ export async function loadMissionState(
 
   let trainingDecision: MissionState["trainingDecision"] = null;
   try {
-    const mistakeCategories = safeSkills
-      .flatMap((s) => s.recentMistakes)
-      .concat(lastObservation?.category ? [lastObservation.category] : [])
-      .filter((m): m is ObservationCategory => typeof m === "string");
-    const intelligence = analyzeLearner(safeSkills, mistakeCategories);
-    trainingDecision = selectAdaptiveTraining({
-      skills: safeSkills,
-      intelligence,
-      assessment: lastVerification
-        ? {
-            learningSignal:
-              lastVerification.status === "COMPLETE"
-                ? "mastered"
-                : lastVerification.status === "BLOCKED_BY_SAFETY_POLICY"
-                  ? "blocked"
-                  : "needs_practice",
-            grade: lastVerification.score,
-            mistakeBreakdown:
-              lastObservation?.category &&
-              lastObservation.category !== "VALID_ALTERNATIVE" &&
-              lastObservation.category !== "INDEPENDENT_SOLUTION"
-                ? [{ category: lastObservation.category, count: 1 }]
-                : [],
-            hintsUsed: safeHintRows.length,
-          }
-        : null,
-      currentDifficulty: contract.difficulty,
-    });
+    const assessmentEvent = [...safeChallengeEvents]
+      .reverse()
+      .find((e) => e.kind === "assessment");
+    const storedDecision = assessmentEvent
+      ? (asRecord(assessmentEvent.payload)["trainingDecision"] as MissionState["trainingDecision"])
+      : null;
+
+    if (storedDecision) {
+      trainingDecision = storedDecision;
+    } else {
+      const mistakeCategories = safeSkills
+        .flatMap((s) => s.recentMistakes)
+        .concat(lastObservation?.category ? [lastObservation.category] : [])
+        .filter((m): m is ObservationCategory => typeof m === "string");
+      const intelligence = analyzeLearner(safeSkills, mistakeCategories);
+      trainingDecision = selectAdaptiveTraining({
+        skills: safeSkills,
+        intelligence,
+        assessment: lastVerification
+          ? {
+              learningSignal:
+                lastVerification.status === "COMPLETE"
+                  ? "mastered"
+                  : lastVerification.status === "BLOCKED_BY_SAFETY_POLICY"
+                    ? "blocked"
+                    : "needs_practice",
+              grade: lastVerification.score,
+              mistakeBreakdown:
+                lastObservation?.category &&
+                lastObservation.category !== "VALID_ALTERNATIVE" &&
+                lastObservation.category !== "INDEPENDENT_SOLUTION"
+                  ? [{ category: lastObservation.category, count: 1 }]
+                  : [],
+              hintsUsed: safeHintRows.length,
+            }
+          : null,
+        currentDifficulty: contract.difficulty,
+      });
+    }
   } catch (error) {
     console.error(
       "[LinuxForge mission-state] trainingDecision computation failed",
@@ -1581,6 +1592,23 @@ export async function runLabCommand(
       expectedMinutes: Math.max(1, contract.difficulty * 5),
       difficulty: contract.difficulty,
     });
+  }
+
+  // Meaningful completion / assessment boundary:
+  // When a run completes the mission or produces a terminal verification outcome,
+  // invoke the existing assessMission pipeline to record progression and training decision.
+  if (
+    nowComplete ||
+    verification.status === "COMPLETE" ||
+    verification.status === "BLOCKED_BY_SAFETY_POLICY" ||
+    verification.status === "RESULT_CORRECT_SKILL_NOT_DEMONSTRATED" ||
+    verification.status === "RESULT_INCORRECT_SKILL_DEMONSTRATED"
+  ) {
+    try {
+      await assessMission(db, userId, challengeId);
+    } catch (assessError) {
+      console.error("[LinuxForge engine] assessMission post-run failure", assessError);
+    }
   }
 
   const state = await loadMissionState(db, userId, challengeId, execution.cwd, language);

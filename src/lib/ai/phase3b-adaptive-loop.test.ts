@@ -378,4 +378,78 @@ describe("Phase 3B — Integrated Adaptive Loop", () => {
       expect(results[i]!.decision.primarySkill).toBe(results[0]!.decision.primarySkill);
     }
   });
+
+  it("8. Prerequisites remain strictly enforced even when adaptive training requests an advanced skill", () => {
+    // Attempt with only C01 complete
+    const attempts = [
+      {
+        user_id: "user-1",
+        challenge_id: "C01",
+        status: "COMPLETE",
+        best_score: 100,
+        attempts: 1,
+        xp_awarded: 100,
+        created_at: "2026-09-29T10:00:00.000Z",
+        updated_at: "2026-09-29T10:01:00.000Z",
+        started_at: "2026-09-29T10:00:00.000Z",
+        completed_at: "2026-09-29T10:01:00.000Z",
+        evidence: null,
+      },
+    ];
+
+    // Adaptive training requests 'shell-scripting' / 'iteration' at difficulty 3
+    const advancedDecision = {
+      version: "v37" as const,
+      mode: "PROGRESSION" as const,
+      primarySkill: "shell-scripting" as const,
+      supportingSkills: ["iteration" as const],
+      difficulty: 3,
+      reason: "Advance to shell automation",
+      evidence: [],
+      focusMistakes: [],
+      constraints: [],
+      masteryGate: "ADVANCE" as const,
+      journeyPhase: "Automation",
+      journeyNextSkills: ["shell-scripting" as const],
+    };
+
+    const nextId = pickNext(attempts as any, [], "C01", [], advancedDecision);
+
+    expect(nextId).toBeDefined();
+    // C04 requires shell-scripting and iteration at difficulty 3, but is locked behind C03.
+    // It must NEVER be selected before its prerequisites are met.
+    expect(nextId).not.toBe("C04");
+    expect(nextId).not.toBe("C03");
+  });
+
+  it("9. Deterministic authority: verifier result and score cannot be modified by assessment, intelligence, or tutor", () => {
+    const rawVerification: Verification = {
+      status: "RESULT_CORRECT_SKILL_NOT_DEMONSTRATED",
+      objectives: [{ label: "objective-1", met: true, evidence: "files found" }],
+      score: 50,
+      message: "Required technique not demonstrated",
+      remediation: ["Use a loop"],
+      wentWell: [],
+    };
+
+    const assessment = buildMissionAssessment({
+      contract: { difficulty: 2, requiredSkills: ["iteration"] },
+      verification: rawVerification,
+      commands: [
+        { commands: ["touch a; touch b"], exitCode: 0, mutationCount: 2, blocked: null, usedLoop: false },
+      ],
+      observations: [
+        { category: "SKILL_BYPASS", conceptUnderstanding: "partial", skillDemonstrated: false },
+      ],
+      hintsUsed: 0,
+      startedAt: "2026-09-29T10:00:00.000Z",
+      completedAt: null,
+    });
+
+    // Verification status and score remain unchanged by assessment
+    expect(assessment.status).toBe("RESULT_CORRECT_SKILL_NOT_DEMONSTRATED");
+    expect(assessment.grade).toBe(50);
+    expect(rawVerification.score).toBe(50);
+    expect(rawVerification.status).toBe("RESULT_CORRECT_SKILL_NOT_DEMONSTRATED");
+  });
 });
