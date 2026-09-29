@@ -1,22 +1,22 @@
 /**
  * Mission & Question Generation V2 — Deterministic Server-Side Validation Pipeline.
  *
- * Architecture:
- * GENERATE (existing AdaptiveExercise)
+ * Strict Deterministic Pipeline Order:
+ * GENERATE (candidate AdaptiveExercise)
  *   ↓
- * SCHEMA VALIDATE (validateGeneratedExercise)
+ * Gate 1: SCHEMA VALIDATE (validateGeneratedExercise)
  *   ↓
- * ENVIRONMENT VALIDATE (authoritative CanonicalEnvironmentModel check)
+ * Gate 2: ENVIRONMENT VALIDATE (authoritative CanonicalEnvironmentModel check)
  *   ↓
- * OBJECTIVE VALIDATE (blueprint, skills, and evaluation plan alignment)
+ * Gate 3: OBJECTIVE VALIDATE (blueprint, skills, and evaluation plan alignment)
  *   ↓
- * VERIFIER VALIDATE (deterministic Contract generation)
+ * Gate 4: VERIFIER VALIDATE (deterministic Contract generation)
  *   ↓
- * DIFFICULTY VALIDATE (bounds and blueprint alignment)
+ * Gate 5: DIFFICULTY VALIDATE (bounds and blueprint alignment)
  *   ↓
- * PREREQUISITE VALIDATE (skill graph and blueprint consistency)
+ * Gate 6: PREREQUISITE VALIDATE (deterministic validation using SKILL_GRAPH)
  *   ↓
- * CONTINUITY VALIDATE (scenario artifacts & references)
+ * Gate 7: CONTINUITY VALIDATE (generic scenario artifact & context validation)
  *   ↓
  * BOUNDED REPAIR OR REJECT (max 2 deterministic structural repair attempts)
  *   ↓
@@ -26,15 +26,15 @@
  * No exercise is published without 100% deterministic validation.
  */
 
-import type { AdaptiveExercise } from "@/lib/forge/types";
+import type { AdaptiveExercise, SkillId } from "@/lib/forge/types";
 import type { Contract } from "@/lib/forge/contracts.server";
 import {
   generatedDefinitionToContract,
   type GeneratedDefinition,
   type GeneratedEvaluationPlan,
 } from "@/lib/forge/generated-contract.server";
-import type { CanonicalEnvironmentModel } from "@/lib/forge/environment/types";
-import type { MissionBlueprint } from "./mission-generator";
+import type { CanonicalEnvironmentModel, MissionArtifact } from "@/lib/forge/environment/types";
+import { SKILL_GRAPH, type MissionBlueprint } from "./mission-generator";
 import { validateGeneratedExercise } from "./exercise-generation.server";
 
 export type MissionRejectionReasonCode =
@@ -50,7 +50,7 @@ export type MissionRejection = {
   ok: false;
   reason: MissionRejectionReasonCode;
   reasons: string[];
-  details?: Record<string, unknown>;
+  details?: Record<string, unknown> | undefined;
   repairAttempts: number;
 };
 
@@ -65,12 +65,16 @@ export type MissionPublishSuccess = {
 export type MissionV2ValidationResult = MissionPublishSuccess | MissionRejection;
 
 export type MissionV2Context = {
-  blueprint?: MissionBlueprint;
-  environment?: CanonicalEnvironmentModel;
+  blueprint?: MissionBlueprint | undefined;
+  environment?: CanonicalEnvironmentModel | undefined;
   /** Known mission artifacts or state identifiers from previous missions in scenario */
-  knownScenarioArtifacts?: string[];
+  knownScenarioArtifacts?: string[] | undefined;
+  /** Tracked structured mission artifacts from previous missions or environment */
+  trackedMissionArtifacts?: MissionArtifact[] | undefined;
+  /** Explicit list of prior artifact references required by scenario continuity */
+  requiredPriorArtifacts?: string[] | undefined;
   /** Allowed command kinds known to be supported by the environment */
-  supportedCommandKinds?: string[];
+  supportedCommandKinds?: string[] | undefined;
 };
 
 /**
@@ -135,8 +139,9 @@ function attemptDeterministicRepair(
 }
 
 /**
- * Stage 2: Environment Validation.
- * Validates that the exercise does not require capabilities or state unsupported by the environment.
+ * Gate 2: Environment Validation.
+ * Validates that the exercise structurally requires only capabilities supported by the environment.
+ * Evaluates evaluationPlan, skills, evaluationFocus, and explicit capability needs.
  */
 function validateEnvironmentSupport(
   exercise: AdaptiveExercise,
@@ -149,86 +154,98 @@ function validateEnvironmentSupport(
   }
 
   const reasons: string[] = [];
-  const textCorpus = `${exercise.title} ${exercise.objective} ${exercise.scenario}`.toLowerCase();
   const plan = exercise.evaluationPlan;
   const caps = env.runtime?.capabilities;
   const net = env.network;
 
-  // 1. Package requirements: if exercise mentions installing or requires package observation
+  // Derive structured requirements from evaluationPlan, skills, and evaluationFocus
+  const structuredCommands = new Set(
+    (plan?.requiredCommandKinds ?? []).map((c) => c.toLowerCase().trim()),
+  );
+
+  const evaluationFocusSet = new Set(
+    exercise.evaluationFocus.map((f) => f.toLowerCase().trim()),
+  );
+
+  // 1. Package requirements
   const requiresPackage =
-    textCorpus.includes("apt install") ||
-    textCorpus.includes("apt-get install") ||
-    textCorpus.includes("dpkg -i") ||
-    exercise.evaluationFocus.some((f) => f.toLowerCase().includes("package"));
+    structuredCommands.has("apt") ||
+    structuredCommands.has("apt-get") ||
+    structuredCommands.has("dpkg") ||
+    evaluationFocusSet.has("package") ||
+    evaluationFocusSet.has("package installation") ||
+    evaluationFocusSet.has("packages");
 
   if (requiresPackage) {
-    if (!caps?.packages) {
+    if (!caps || caps.packages !== true) {
       reasons.push(
-        "Exercise requires package management or package state verification, but environment does not support packages capability.",
+        "Exercise structurally requires package capability, but environment does not support packages.",
       );
     }
   }
 
-  // 2. Service requirements: if exercise requires service management or inspection
+  // 2. Service requirements
   const requiresService =
-    textCorpus.includes("systemctl") ||
-    textCorpus.includes("service ") ||
-    exercise.evaluationFocus.some((f) => f.toLowerCase().includes("service"));
+    structuredCommands.has("systemctl") ||
+    structuredCommands.has("service") ||
+    evaluationFocusSet.has("service") ||
+    evaluationFocusSet.has("services") ||
+    evaluationFocusSet.has("service management");
 
   if (requiresService) {
-    if (!caps?.services) {
+    if (!caps || caps.services !== true) {
       reasons.push(
-        "Exercise requires system service management or verification, but environment does not support services capability.",
+        "Exercise structurally requires service capability, but environment does not support services.",
       );
     }
   }
 
   // 3. Process requirements
   const requiresProcess =
-    textCorpus.includes("kill ") ||
-    textCorpus.includes("pkill ") ||
-    textCorpus.includes("ps aux") ||
-    exercise.evaluationFocus.some((f) => f.toLowerCase().includes("process"));
+    structuredCommands.has("ps") ||
+    structuredCommands.has("kill") ||
+    structuredCommands.has("pkill") ||
+    structuredCommands.has("top") ||
+    structuredCommands.has("htop") ||
+    evaluationFocusSet.has("process") ||
+    evaluationFocusSet.has("processes") ||
+    evaluationFocusSet.has("process control");
 
   if (requiresProcess) {
-    if (!caps?.processes) {
+    if (!caps || caps.processes !== true) {
       reasons.push(
-        "Exercise requires process inspection or process control, but environment does not support processes capability.",
+        "Exercise structurally requires process capability, but environment does not support processes.",
       );
     }
   }
 
-  // 4. Network requirements: if exercise requires external or network operations
+  // 4. Network requirements
   const requiresNetwork =
-    textCorpus.includes("ping ") ||
-    textCorpus.includes("curl ") ||
-    textCorpus.includes("nmap ") ||
-    textCorpus.includes("nc ") ||
-    textCorpus.includes("connect to") ||
-    exercise.skills.includes("networking");
+    exercise.skills.includes("networking") ||
+    structuredCommands.has("ping") ||
+    structuredCommands.has("curl") ||
+    structuredCommands.has("nmap") ||
+    structuredCommands.has("nc") ||
+    evaluationFocusSet.has("network") ||
+    evaluationFocusSet.has("networking") ||
+    evaluationFocusSet.has("external network");
 
   if (requiresNetwork) {
-    if (!caps?.network) {
+    if (!caps || caps.network !== true) {
       reasons.push(
-        "Exercise requires networking capabilities, but environment does not support network operations.",
+        "Exercise structurally requires networking capability, but environment does not support network operations.",
       );
     }
-    if (net && net.networkIsolationEnforced && textCorpus.includes("external")) {
+    // Check network isolation if external network is required
+    const requiresExternal =
+      evaluationFocusSet.has("external network") ||
+      exercise.title.toLowerCase().includes("external") ||
+      exercise.objective.toLowerCase().includes("external");
+
+    if (net && net.networkIsolationEnforced && requiresExternal) {
       reasons.push(
         "Exercise attempts external network connection, but environment enforces strict network isolation.",
       );
-    }
-  }
-
-  // 5. Evaluation plan commands support
-  if (plan?.requiredCommandKinds && caps) {
-    for (const cmd of plan.requiredCommandKinds) {
-      if (cmd === "service" || cmd === "systemctl") {
-        if (!caps.services) reasons.push(`Command kind '${cmd}' requires unsupported services capability.`);
-      }
-      if (cmd === "ps" || cmd === "kill" || cmd === "pkill") {
-        if (!caps.processes) reasons.push(`Command kind '${cmd}' requires unsupported processes capability.`);
-      }
     }
   }
 
@@ -239,7 +256,7 @@ function validateEnvironmentSupport(
 }
 
 /**
- * Stage 3: Objective Validation.
+ * Gate 3: Objective Validation.
  * Validates that the exercise objective aligns with the blueprint, target skills, and evaluation plan.
  */
 function validateObjective(
@@ -292,7 +309,7 @@ function validateObjective(
 }
 
 /**
- * Stage 4: Verifier Validation.
+ * Gate 4: Verifier Validation.
  * Ensures the evaluation plan can be converted into a deterministic Contract without errors.
  */
 function validateVerifierPlan(
@@ -359,7 +376,7 @@ function validateVerifierPlan(
 }
 
 /**
- * Stage 5: Difficulty Validation.
+ * Gate 5: Difficulty Validation.
  * Verifies bounds (1-5) and alignment with blueprint if present.
  */
 function validateDifficulty(
@@ -386,20 +403,39 @@ function validateDifficulty(
 }
 
 /**
- * Stage 6: Prerequisite Validation.
- * Verifies that the required skills and prerequisites are structurally coherent with the blueprint.
+ * Gate 6: Prerequisite Validation using SKILL_GRAPH.
+ * Deterministically verifies prerequisite relationships against the canonical SKILL_GRAPH.
  */
 function validatePrerequisites(
   exercise: AdaptiveExercise,
   blueprint?: MissionBlueprint,
 ): { valid: boolean; reasons: string[] } {
   const reasons: string[] = [];
+  const validSkills = new Set<SkillId>(Object.keys(SKILL_GRAPH) as SkillId[]);
 
   if (blueprint?.prerequisites && blueprint.prerequisites.length > 0) {
-    // A skill cannot be a prerequisite of itself
     for (const prereq of blueprint.prerequisites) {
-      if (prereq === blueprint.primarySkill && blueprint.prerequisites.length === 1) {
-        reasons.push(`Circular prerequisite: skill '${prereq}' cannot be its own prerequisite.`);
+      // 1. Check if prerequisite skill is a valid registered SkillId in SKILL_GRAPH
+      if (!validSkills.has(prereq)) {
+        reasons.push(`Invalid prerequisite skill '${prereq}' is not registered in the skill graph.`);
+        continue;
+      }
+
+      // 2. Check for self/circular reference
+      if (prereq === blueprint.primarySkill) {
+        reasons.push(`Circular prerequisite: primary skill '${prereq}' cannot be its own prerequisite.`);
+      }
+    }
+
+    // 3. Verify that if SKILL_GRAPH specifies prerequisites for primarySkill,
+    // the blueprint's prerequisites do not contradict or omit required graph relationships.
+    const graphPrereqs = SKILL_GRAPH[blueprint.primarySkill] ?? [];
+    if (graphPrereqs.length > 0) {
+      const hasGraphPrereq = blueprint.prerequisites.some((p) => graphPrereqs.includes(p));
+      if (!hasGraphPrereq) {
+        reasons.push(
+          `Blueprint prerequisites do not satisfy canonical skill graph prerequisites [${graphPrereqs.join(", ")}] for primary skill '${blueprint.primarySkill}'.`,
+        );
       }
     }
   }
@@ -408,9 +444,8 @@ function validatePrerequisites(
 }
 
 /**
- * Stage 7: Continuity Validation.
- * Validates scenario continuity: if an exercise refers to previous scenario artifacts,
- * they must be represented in context or be deterministically observable.
+ * Gate 7: Continuity Validation (Generic).
+ * Uses structured scenario artifacts and requiredPriorArtifacts instead of hardcoded names.
  */
 function validateContinuity(
   exercise: AdaptiveExercise,
@@ -419,17 +454,47 @@ function validateContinuity(
   const reasons: string[] = [];
   const plan = exercise.evaluationPlan;
 
-  if (context?.blueprint?.storyContinuity) {
-    // Check if evaluation plan depends on an artifact that isn't provided
-    const knownArtifacts = new Set(context.knownScenarioArtifacts ?? []);
+  // Build a generic set of available/known scenario artifacts
+  const knownArtifacts = new Set<string>();
 
-    if (plan?.objectives) {
-      for (const obj of plan.objectives) {
-        // If an objective expects a file to already exist or mustNotExist in a non-standard location
-        if (obj.path.includes("project_alpha") && !knownArtifacts.has(obj.path) && !knownArtifacts.has("project_alpha")) {
-          // Unsupported continuity reference
+  if (context?.knownScenarioArtifacts) {
+    for (const art of context.knownScenarioArtifacts) {
+      knownArtifacts.add(art.trim());
+    }
+  }
+
+  if (context?.trackedMissionArtifacts) {
+    for (const art of context.trackedMissionArtifacts) {
+      knownArtifacts.add(art.identifier.trim());
+      knownArtifacts.add(art.id.trim());
+    }
+  }
+
+  if (context?.environment?.artifacts) {
+    for (const art of context.environment.artifacts) {
+      knownArtifacts.add(art.identifier.trim());
+      knownArtifacts.add(art.id.trim());
+    }
+  }
+
+  // 1. Check requiredPriorArtifacts in context: any artifact explicitly required by scenario must exist in known context
+  if (context?.requiredPriorArtifacts && context.requiredPriorArtifacts.length > 0) {
+    for (const requiredArt of context.requiredPriorArtifacts) {
+      if (!knownArtifacts.has(requiredArt)) {
+        reasons.push(
+          `Scenario continuity requirement '${requiredArt}' is absent from supplied scenario context.`,
+        );
+      }
+    }
+  }
+
+  // 2. Check evaluation objectives for explicit prior artifact dependencies
+  if (plan?.objectives) {
+    for (const obj of plan.objectives) {
+      if (context?.requiredPriorArtifacts && context.requiredPriorArtifacts.includes(obj.path)) {
+        if (!knownArtifacts.has(obj.path)) {
           reasons.push(
-            `Objective path '${obj.path}' depends on previous scenario artifact 'project_alpha' which is absent from scenario context.`,
+            `Objective path '${obj.path}' requires prior scenario artifact which is absent from scenario context.`,
           );
         }
       }
@@ -441,7 +506,27 @@ function validateContinuity(
 
 /**
  * Main V2 Mission & Question Generation Gate.
- * Runs candidate through all 7 validation stages with bounded deterministic repair.
+ * Runs candidate through all 7 validation stages in the STRICT intended order:
+ *
+ * GENERATE
+ *   ↓
+ * Gate 1: SCHEMA VALIDATE
+ *   ↓
+ * Gate 2: ENVIRONMENT VALIDATE
+ *   ↓
+ * Gate 3: OBJECTIVE VALIDATE
+ *   ↓
+ * Gate 4: VERIFIER VALIDATE
+ *   ↓
+ * Gate 5: DIFFICULTY VALIDATE
+ *   ↓
+ * Gate 6: PREREQUISITE VALIDATE
+ *   ↓
+ * Gate 7: CONTINUITY VALIDATE
+ *   ↓
+ * BOUNDED REPAIR OR REJECT
+ *   ↓
+ * PUBLISH
  */
 export function validateAndPublishMissionV2(
   candidate: AdaptiveExercise,
@@ -454,86 +539,7 @@ export function validateAndPublishMissionV2(
   const maxAttempts = 2;
 
   while (repairAttempts <= maxAttempts) {
-    // Gate 1: Difficulty Validation
-    const diffValidation = validateDifficulty(currentCandidate, context?.blueprint);
-    if (!diffValidation.valid) {
-      if (repairAttempts < maxAttempts) {
-        const repairedCandidate = attemptDeterministicRepair(
-          currentCandidate,
-          repairAttempts + 1,
-          diffValidation.reasons,
-        );
-        if (repairedCandidate) {
-          currentCandidate = repairedCandidate;
-          repairAttempts++;
-          repaired = true;
-          continue;
-        }
-      }
-      return {
-        ok: false,
-        reason: "DIFFICULTY_INVALID",
-        reasons: diffValidation.reasons,
-        repairAttempts,
-      };
-    }
-
-    // Gate 2: Objective Validation
-    const objValidation = validateObjective(currentCandidate, context?.blueprint);
-    if (!objValidation.valid) {
-      return {
-        ok: false,
-        reason: "OBJECTIVE_INVALID",
-        reasons: objValidation.reasons,
-        repairAttempts,
-      };
-    }
-
-    // Gate 3: Verifier Validation
-    const verifierValidation = validateVerifierPlan(currentCandidate, context);
-    if (!verifierValidation.valid) {
-      return {
-        ok: false,
-        reason: "VERIFIER_UNSUPPORTED",
-        reasons: verifierValidation.reasons,
-        repairAttempts,
-      };
-    }
-
-    // Gate 4: Continuity Validation
-    const contValidation = validateContinuity(currentCandidate, context);
-    if (!contValidation.valid) {
-      return {
-        ok: false,
-        reason: "CONTINUITY_INVALID",
-        reasons: contValidation.reasons,
-        repairAttempts,
-      };
-    }
-
-    // Gate 5: Prerequisite Validation
-    const prereqValidation = validatePrerequisites(currentCandidate, context?.blueprint);
-    if (!prereqValidation.valid) {
-      return {
-        ok: false,
-        reason: "PREREQUISITE_INVALID",
-        reasons: prereqValidation.reasons,
-        repairAttempts,
-      };
-    }
-
-    // Gate 6: Environment Validation
-    const envValidation = validateEnvironmentSupport(currentCandidate, context?.environment);
-    if (!envValidation.valid) {
-      return {
-        ok: false,
-        reason: "ENVIRONMENT_UNSUPPORTED",
-        reasons: envValidation.reasons,
-        repairAttempts,
-      };
-    }
-
-    // Gate 7: Schema Validation (reusing existing validateGeneratedExercise)
+    // Gate 1: SCHEMA VALIDATE (validateGeneratedExercise)
     const schemaValidation = validateGeneratedExercise(currentCandidate, context?.blueprint);
     if (!schemaValidation.valid) {
       if (repairAttempts < maxAttempts) {
@@ -562,7 +568,73 @@ export function validateAndPublishMissionV2(
       currentCandidate = schemaValidation.normalized;
     }
 
-    // All gates passed!
+    // Gate 2: ENVIRONMENT VALIDATE
+    const envValidation = validateEnvironmentSupport(currentCandidate, context?.environment);
+    if (!envValidation.valid) {
+      return {
+        ok: false,
+        reason: "ENVIRONMENT_UNSUPPORTED",
+        reasons: envValidation.reasons,
+        repairAttempts,
+      };
+    }
+
+    // Gate 3: OBJECTIVE VALIDATE
+    const objValidation = validateObjective(currentCandidate, context?.blueprint);
+    if (!objValidation.valid) {
+      return {
+        ok: false,
+        reason: "OBJECTIVE_INVALID",
+        reasons: objValidation.reasons,
+        repairAttempts,
+      };
+    }
+
+    // Gate 4: VERIFIER VALIDATE
+    const verifierValidation = validateVerifierPlan(currentCandidate, context);
+    if (!verifierValidation.valid) {
+      return {
+        ok: false,
+        reason: "VERIFIER_UNSUPPORTED",
+        reasons: verifierValidation.reasons,
+        repairAttempts,
+      };
+    }
+
+    // Gate 5: DIFFICULTY VALIDATE
+    const diffValidation = validateDifficulty(currentCandidate, context?.blueprint);
+    if (!diffValidation.valid) {
+      return {
+        ok: false,
+        reason: "DIFFICULTY_INVALID",
+        reasons: diffValidation.reasons,
+        repairAttempts,
+      };
+    }
+
+    // Gate 6: PREREQUISITE VALIDATE
+    const prereqValidation = validatePrerequisites(currentCandidate, context?.blueprint);
+    if (!prereqValidation.valid) {
+      return {
+        ok: false,
+        reason: "PREREQUISITE_INVALID",
+        reasons: prereqValidation.reasons,
+        repairAttempts,
+      };
+    }
+
+    // Gate 7: CONTINUITY VALIDATE
+    const contValidation = validateContinuity(currentCandidate, context);
+    if (!contValidation.valid) {
+      return {
+        ok: false,
+        reason: "CONTINUITY_INVALID",
+        reasons: contValidation.reasons,
+        repairAttempts,
+      };
+    }
+
+    // All 7 gates passed!
     return {
       ok: true,
       exercise: currentCandidate,

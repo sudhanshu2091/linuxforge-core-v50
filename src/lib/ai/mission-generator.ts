@@ -22,7 +22,7 @@ export type MissionBlueprint = {
   trainingDecision?: TrainingDecision;
 };
 
-const SKILL_GRAPH: Record<SkillId, SkillId[]> = {
+export const SKILL_GRAPH: Record<SkillId, SkillId[]> = {
   filesystem: [],
   permissions: ["filesystem"],
   iteration: ["filesystem"],

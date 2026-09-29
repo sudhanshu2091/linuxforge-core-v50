@@ -10,20 +10,20 @@ AI-generated content is advisory and untrusted. No exercise is published or expo
 ```
 Candidate Exercise (AdaptiveExercise)
            ↓
-   Gate 1: DIFFICULTY VALIDATE
-           ↓ (1 <= difficulty <= 5, aligned with blueprint)
-   Gate 2: OBJECTIVE VALIDATE
-           ↓ (measures blueprint objective shape, primary skill, concrete tasks)
-   Gate 3: VERIFIER VALIDATE
-           ↓ (converts to executable Contract, verify() function verified)
-   Gate 4: CONTINUITY VALIDATE
-           ↓ (scenario artifacts & references deterministically known)
-   Gate 5: PREREQUISITE VALIDATE
-           ↓ (skill graph & blueprint prerequisites verified)
-   Gate 6: ENVIRONMENT VALIDATE
-           ↓ (requires only capabilities supported by CanonicalEnvironmentModel)
-   Gate 7: SCHEMA VALIDATE
+   Gate 1: SCHEMA VALIDATE
            ↓ (title/scenario/objective length, approved sourceRefs, command bounds)
+   Gate 2: ENVIRONMENT VALIDATE
+           ↓ (structured capabilities check: packages, services, processes, networking)
+   Gate 3: OBJECTIVE VALIDATE
+           ↓ (measures blueprint objective shape, primary skill, concrete tasks)
+   Gate 4: VERIFIER VALIDATE
+           ↓ (converts to executable Contract, verify() function verified)
+   Gate 5: DIFFICULTY VALIDATE
+           ↓ (1 <= difficulty <= 5, aligned with blueprint)
+   Gate 6: PREREQUISITE VALIDATE
+           ↓ (deterministic validation against canonical SKILL_GRAPH)
+   Gate 7: CONTINUITY VALIDATE
+           ↓ (generic scenario artifacts & required prior references verified)
    Bounded Repair or Reject (max 2 deterministic structural repairs)
            ↓
    Publish Validated Mission & Deterministic Contract
