@@ -29,6 +29,7 @@ export type Contract = {
   difficulty: number;
   prerequisites: string[];
   previousReferences: string[];
+  requiredCapabilities?: string[];
   contextRequirements: (keyof LearnerContext)[];
   xpReward: number;
   /** Progressive hints: concept → direction → command → near solution → solution. */

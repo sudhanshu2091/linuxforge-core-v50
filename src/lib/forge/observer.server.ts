@@ -5,11 +5,18 @@
  * writes friendly coaching, but it never decides the mission status — that is
  * the deterministic verifier's job alone.
  *
- * FUTURE AI ADAPTER BOUNDARY
- * --------------------------
- * `ObserverAdapter` is the seam a real model would plug into later. Today the
- * only implementation is `deterministicObserver`. No model is called and no
- * model output is simulated.
+ * INTENT-AWARE EVALUATION (Phase 3):
+ * Evaluates learner actions from:
+ * 1. learner input / command
+ * 2. execution result & exitCode
+ * 3. actual observed world state
+ * 4. deterministic verification result
+ * 5. method evidence
+ * 6. mission objective
+ * 7. required skills
+ * 8. allowed approaches
+ * 9. banned shortcuts
+ * 10. hints used
  */
 
 import type { Contract } from "./contracts.server";
@@ -25,7 +32,6 @@ export type ObserverInput = {
     exitCode: number;
     mutationCount: number;
   };
-
   verification: Verification;
   /** Commands recorded across this attempt, oldest first. */
   history: string[];
@@ -52,6 +58,14 @@ const KNOWN = [
   "help",
   "clear",
   "for",
+  "rm",
+  "grep",
+  "find",
+  "ps",
+  "kill",
+  "head",
+  "tail",
+  "less",
 ];
 
 function nearestKnown(word: string): string | null {
@@ -70,6 +84,7 @@ function nearestKnown(word: string): string | null {
         );
     return (dp[a.length] as number[])[b.length]!;
   };
+
   let best: string | null = null;
   let bestD = 99;
   for (const k of KNOWN) {
@@ -96,6 +111,7 @@ export const aiObserver: ObserverAdapter = {
     const failed =
       input.execution.blocked || input.execution.lines.some((line) => line.kind === "error");
     if (failed) return deterministicObserver.observe(input);
+
     try {
       const value = (await evaluateAttempt(input)) as Record<string, unknown>;
       const categories = new Set([
@@ -121,17 +137,25 @@ export const aiObserver: ObserverAdapter = {
         value["conceptUnderstanding"] === "solid" || value["conceptUnderstanding"] === "partial"
           ? value["conceptUnderstanding"]
           : "unclear";
+
       return {
-        intent: typeof value["intent"] === "string" ? value["intent"] : input.contract.objective,
-        approach: typeof value["approach"] === "string" ? value["approach"] : input.raw.trim(),
+        intent:
+          typeof value["intent"] === "string" && value["intent"].length
+            ? value["intent"]
+            : input.contract.objective,
+        approach:
+          typeof value["approach"] === "string" && value["approach"].length
+            ? value["approach"]
+            : input.raw.trim(),
         skillTarget: input.contract.requiredSkills,
         category,
         conceptUnderstanding: understanding,
         skillDemonstrated: value["skillDemonstrated"] === true,
         coaching:
-          typeof value["coaching"] === "string"
+          typeof value["coaching"] === "string" && value["coaching"].length
             ? value["coaching"]
-            : "Let's inspect what the terminal output tells us and adjust from there.",
+            : "Review the terminal output and try the next step.",
+        evidence: Array.isArray(value["evidence"]) ? (value["evidence"] as string[]) : [],
       };
     } catch {
       return deterministicObserver.observe(input);
@@ -139,14 +163,18 @@ export const aiObserver: ObserverAdapter = {
   },
 };
 
-export const deterministicObserver: ObserverAdapter = {
+export const deterministicObserver: ObserverAdapter & {
+  observe: (input: ObserverInput) => Observation;
+} = {
   id: "forge-deterministic-observer-v1",
-  observe({ contract, raw, execution, verification, history, hintsUsed, language }) {
-    const first = raw.trim().split(/\s+/)[0] ?? "";
+  observe({ contract, raw, execution, verification, history, hintsUsed, language }): Observation {
+    const trimmedRaw = raw.trim();
+    const first = trimmedRaw.split(/\s+/)[0] ?? "";
     const errored = execution.lines.some((l) => l.kind === "error");
     const skillTarget = contract.requiredSkills;
     const base = { intent: contract.objective, skillTarget };
 
+    // 1. UNSAFE APPROACH: Blocked by security / sandbox policy
     if (execution.blocked) {
       return {
         ...base,
@@ -159,9 +187,11 @@ export const deterministicObserver: ObserverAdapter = {
           "Let's stay inside the training lab — that one is off limits here. Same goal, safer route.",
           "Yeh command sandbox ke bahar hai, isliye block ho gayi. Wahi kaam safe tarike se kar lete hain.",
         ),
+        evidence: ["Command execution blocked by sandbox safety policy", `Input: ${trimmedRaw}`],
       };
     }
 
+    // 2. ERRORED EXECUTION (Typo, Wrong Path, Wrong Filename, Wrong Argument, Wrong Command)
     if (errored || execution.exitCode !== 0) {
       const typoOf = nearestKnown(first);
       if (typoOf) {
@@ -176,19 +206,26 @@ export const deterministicObserver: ObserverAdapter = {
             `That command failed, but the intent looks close. ${first} looks like a typo of ${typoOf}.`,
             `Command fail hui, par intent close hai. ${first}, ${typoOf} ki typo lag rahi hai.`,
           ),
+          evidence: [`Typo detected: '${first}' is close to '${typoOf}'`, `Exit code: ${execution.exitCode}`],
         };
       }
+
       const missingPath = execution.lines.some((l) =>
         /No such file|cannot access|Not a directory/i.test(l.text),
       );
+      const isWrongFilename = execution.lines.some((l) =>
+        /cannot open|File exists|invalid filename/i.test(l.text),
+      );
+
+      let errorCategory: Observation["category"] = "WRONG_COMMAND";
+      if (missingPath) errorCategory = "WRONG_PATH";
+      else if (isWrongFilename) errorCategory = "WRONG_FILENAME";
+      else if (KNOWN.includes(first)) errorCategory = "WRONG_ARGUMENT";
+
       return {
         ...base,
-        approach: raw.trim(),
-        category: missingPath
-          ? "WRONG_PATH"
-          : KNOWN.includes(first)
-            ? "WRONG_ARGUMENT"
-            : "WRONG_COMMAND",
+        approach: trimmedRaw,
+        category: errorCategory,
         conceptUnderstanding: "partial",
         skillDemonstrated: false,
         coaching: line(
@@ -200,15 +237,20 @@ export const deterministicObserver: ObserverAdapter = {
             ? "Command fail hua kyunki target path/file galat hai. pwd/ls se actual state dekho, phir retry karo."
             : "Command fail hui hai, isliye sirf final state dekh kar success nahi maanenge. Error padho aur command adjust karo.",
         ),
+        evidence: [
+          `Command exited with code ${execution.exitCode}`,
+          `Category derived from terminal error: ${errorCategory}`,
+        ],
       };
     }
 
+    // 3. COMPLETE VERIFICATION STATUS
     if (verification.status === "COMPLETE") {
-      const verificationOnly = /^(ls|pwd|stat|tree|cat|help|clear)(\s|$)/.test(raw.trim());
+      const verificationOnly = /^(ls|pwd|stat|tree|cat|help|clear)(\s|$)/.test(trimmedRaw);
       if (execution.mutationCount === 0 && !verificationOnly) {
         return {
           ...base,
-          approach: raw.trim(),
+          approach: trimmedRaw,
           category: "PARTIAL_UNDERSTANDING",
           conceptUnderstanding: "partial",
           skillDemonstrated: false,
@@ -217,8 +259,12 @@ export const deterministicObserver: ObserverAdapter = {
             "The lab is already in the required end state, but this command did not demonstrate the requested skill. I won't give credit just for an already-correct state.",
             "Lab ka end state already sahi hai, lekin is command ne requested skill demonstrate nahi ki. Sirf purane correct state ke liye credit nahi milega.",
           ),
+          evidence: [
+            "Final state is complete, but zero mutations occurred and command was non-verifying",
+          ],
         };
       }
+
       if (verificationOnly) {
         return {
           ...base,
@@ -231,19 +277,23 @@ export const deterministicObserver: ObserverAdapter = {
             "That is a useful verification step. The mission state is already complete; this command itself is evidence-checking, not the skill task.",
             "Yeh useful verification step hai. Mission already complete hai; yeh command skill task nahi, state check kar raha hai.",
           ),
+          evidence: [`Verification command '${first}' executed on already completed state`],
         };
       }
-      const independent = hintsUsed === 0;
-      const alternative = !contract.allowedApproaches.some((a) =>
-        raw.trim().startsWith(a.split(" ")[0] ?? ""),
+
+      const matchesAllowedExact = contract.allowedApproaches.some((a) =>
+        trimmedRaw === a.trim() || trimmedRaw.startsWith(a.trim() + " "),
       );
+      const alternative = !matchesAllowedExact;
+      const independent = hintsUsed === 0 && !alternative;
+
       return {
         ...base,
-        approach: raw.trim(),
-        category: independent
-          ? "INDEPENDENT_SOLUTION"
-          : alternative
-            ? "VALID_ALTERNATIVE"
+        approach: trimmedRaw,
+        category: alternative
+          ? "VALID_ALTERNATIVE"
+          : independent
+            ? "INDEPENDENT_SOLUTION"
             : "INDEPENDENT_SOLUTION",
         conceptUnderstanding: "solid",
         skillDemonstrated: true,
@@ -256,29 +306,38 @@ export const deterministicObserver: ObserverAdapter = {
             ? "Solid! Bilkul khud se nikala, aur result bhi verify ho gaya."
             : "Ho gaya — tareeqa valid hai, skill dikh gayi.",
         ),
+        evidence: [
+          `Deterministic verification complete`,
+          independent ? "Demonstrated with 0 hints (independent solution)" : "Demonstrated with guidance/alternative approach",
+        ],
       };
     }
 
+    // 4. RESULT CORRECT SKILL NOT DEMONSTRATED (e.g. bypassing loop or technique)
     if (verification.status === "RESULT_CORRECT_SKILL_NOT_DEMONSTRATED") {
       return {
         ...base,
-        approach: `${history.length} separate commands, no loop construct`,
+        approach: `${history.length} separate commands, no required technique construct`,
         category: "SKILL_BYPASS",
         conceptUnderstanding: "partial",
         skillDemonstrated: false,
         coaching: line(
           language,
-          "The files are all there — but this mission is about making the shell repeat for you. Try expressing it once, as a loop.",
-          "Files sab ban gaye, par mission ka point loop hai. Ek hi baar likho aur shell ko repeat karne do.",
+          "The files are all there — but this mission is about demonstrating the required technique. Try expressing it using the requested skill construct.",
+          "Files sab ban gaye, par mission ka point required technique hai. Usi skill construct se karo.",
         ),
+        evidence: [
+          "State requirements met, but required method/technique was bypassed or unobserved",
+        ],
       };
     }
 
+    // 5. RESULT INCORRECT SKILL DEMONSTRATED (correct technique applied to wrong target)
     if (verification.status === "RESULT_INCORRECT_SKILL_DEMONSTRATED") {
       return {
         ...base,
-        approach: raw.trim(),
-        category: /log|error/i.test(raw) ? "WRONG_PATH" : "WRONG_ARGUMENT",
+        approach: trimmedRaw,
+        category: /log|error|wrong/i.test(trimmedRaw) ? "WRONG_PATH" : "WRONG_ARGUMENT",
         conceptUnderstanding: "partial",
         skillDemonstrated: true,
         coaching: line(
@@ -286,9 +345,13 @@ export const deterministicObserver: ObserverAdapter = {
           "Technique is right, target is off. Re-read the exact path or filename in the brief and point the same command at it.",
           "Technique sahi hai, target galat. Brief me diya exact path/filename dekho aur wahi command wahan chala do.",
         ),
+        evidence: [
+          "Required skill technique was demonstrated, but end state target was incorrect",
+        ],
       };
     }
 
+    // 6. RANDOM TRIAL AND ERROR
     const repeated = history.length >= 4 && new Set(history.slice(-4)).size <= 2;
     if (repeated) {
       return {
@@ -302,13 +365,17 @@ export const deterministicObserver: ObserverAdapter = {
           "Pause the typing for a second. Say out loud what end state you need, then pick one command that changes it.",
           "Ek second ruk jao. Pehle bolo final state kya chahiye, phir ek hi command chuno jo wo change kare.",
         ),
+        evidence: [
+          `Repeated similar commands ${history.length} times without state mutation`,
+        ],
       };
     }
 
+    // 7. PARTIAL UNDERSTANDING vs CONCEPT CONFUSION
     const partial = verification.objectives.some((o) => o.met);
     return {
       ...base,
-      approach: raw.trim(),
+      approach: trimmedRaw,
       category: partial ? "PARTIAL_UNDERSTANDING" : "CONCEPT_CONFUSION",
       conceptUnderstanding: partial ? "partial" : "unclear",
       skillDemonstrated: false,
@@ -318,9 +385,14 @@ export const deterministicObserver: ObserverAdapter = {
           ? "Part of it is done. Compare the objective list against what the lab actually shows and close the gap."
           : "Let's rebuild the idea first, then the command. Ask me for a nudge and we will do it step by step.",
         partial
-          ? "Aadha ho gaya. Objective list aur lab ki current state compare karo, gap band karo."
-          : "Pehle concept clear karein, phir command. Nudge maango, step by step karte hain.",
+          ? "Aadha ho gaya. Objective list aur lab ki current state compare karo aur baaki gap fill karo."
+          : "Pehle concept clear kar lete hain, phir command chalayenge. Nudge mango, step by step karte hain.",
       ),
+      evidence: [
+        partial
+          ? "Some objectives met in deterministic verification, but others incomplete"
+          : "Zero objectives met and unobserved skill construct",
+      ],
     };
   },
 };

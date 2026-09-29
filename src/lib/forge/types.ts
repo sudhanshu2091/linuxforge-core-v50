@@ -60,6 +60,8 @@ export type Observation = {
   skillDemonstrated: boolean;
   /** Learner-facing mentor line. Hidden scores/policies are never included. */
   coaching: string;
+  /** Concrete execution/method evidence describing why this classification occurred. */
+  evidence?: string[];
 };
 
 export type ObjectiveResult = {

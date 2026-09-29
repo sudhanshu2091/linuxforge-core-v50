@@ -89,11 +89,41 @@ const safePlan = (plan: GeneratedEvaluationPlan): GeneratedEvaluationPlan | null
   const minimumMutations = Number.isFinite(plan.minimumMutations)
     ? Math.max(0, Math.min(100, Math.floor(plan.minimumMutations!)))
     : 0;
+
+  const CANONICAL_CAPABILITIES = new Set([
+    "interactiveShell",
+    "streaming",
+    "resize",
+    "processes",
+    "services",
+    "environmentVariables",
+    "network",
+    "snapshots",
+    "pauseResume",
+    "packages",
+  ]);
+
+  const requiredCapabilities: string[] = [];
+  if (Array.isArray(plan.requiredCapabilities)) {
+    for (const cap of plan.requiredCapabilities) {
+      if (typeof cap === "string") {
+        const trimmed = cap.trim();
+        if (!CANONICAL_CAPABILITIES.has(trimmed)) {
+          return null;
+        }
+        if (!requiredCapabilities.includes(trimmed)) {
+          requiredCapabilities.push(trimmed);
+        }
+      }
+    }
+  }
+
   return {
     objectives,
     requiredCommandKinds,
     requireLoop: plan.requireLoop === true,
     minimumMutations,
+    ...(requiredCapabilities.length > 0 ? { requiredCapabilities } : {}),
   };
 };
 
@@ -132,6 +162,7 @@ export function generatedDefinitionToContract(
     successStory: definition.successStory,
     failureStory: definition.failureStory,
     remediation: definition.remediation,
+    ...(plan.requiredCapabilities ? { requiredCapabilities: plan.requiredCapabilities } : {}),
     verify(world: World, evidence: MethodEvidence): VerifyOutcome {
       const objectives: ObjectiveResult[] = plan.objectives.map((expected) => {
         const actual = world.get(expected.path);

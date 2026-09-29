@@ -72,6 +72,7 @@ export type RequiredPriorArtifactSpec = {
   identifier: string;
   id?: string | undefined;
   kind?: MissionArtifactKind | undefined;
+  expectedState?: Record<string, unknown> | undefined;
 };
 
 export type MissionV2Context = {
@@ -494,6 +495,26 @@ function validateContinuity(
       reasons.push(
         `Artifact '${targetIdentifier}' evidence level '${match.evidence}' is insufficient for authoritative scenario continuity.`,
       );
+    }
+
+    // State check: if required spec or matching artifact has expectedState, verify observedState
+    const targetExpectedState =
+      (typeof req !== "string" ? req.expectedState : undefined) ?? match.expectedState;
+
+    if (targetExpectedState && Object.keys(targetExpectedState).length > 0) {
+      if (!match.observedState || typeof match.observedState !== "object") {
+        reasons.push(
+          `Artifact '${targetIdentifier}' requires expected state but observedState is missing.`,
+        );
+      } else {
+        for (const [key, val] of Object.entries(targetExpectedState)) {
+          if (match.observedState[key] !== val) {
+            reasons.push(
+              `Artifact '${targetIdentifier}' state mismatch for key '${key}': expected ${JSON.stringify(val)}, observed ${JSON.stringify(match.observedState[key])}.`,
+            );
+          }
+        }
+      }
     }
   }
 

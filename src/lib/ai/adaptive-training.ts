@@ -158,6 +158,25 @@ export function selectAdaptiveTraining(input: {
     reason = masteryDecision.rationale;
     evidence.push(...masteryDecision.gateReasons);
     constraints.push("Keep the task inside the approved isolated lab workflow.");
+  } else if (assessment?.learningSignal === "blocked" || topMistake === "UNSAFE_APPROACH") {
+    mode = "REMEDIATION";
+    sourceStrategy = "targeted-patterns";
+    difficulty = current;
+    reason = "Safety evidence requires a controlled remediation cycle before increasing challenge.";
+    evidence.push("safety boundary or unsafe approach detected");
+    constraints.push("Keep the task inside the approved isolated lab workflow.");
+  } else if (
+    assessment?.learningSignal === "needs_practice" ||
+    (assessment && assessment.grade < 70) ||
+    input.intelligence.signals.includes("CONCEPT_GAP")
+  ) {
+    mode = "REMEDIATION";
+    sourceStrategy = "targeted-patterns";
+    difficulty = Math.max(1, current - 1);
+    reason =
+      "Recent evidence indicates a weak or misunderstood concept that should be repaired before progression.";
+    evidence.push(`readiness ${input.intelligence.readiness}`, `focus skill ${primary}`);
+    if (topMistake) evidence.push(`repeated evidence around ${topMistake}`);
   } else if (masteryDecision.action === "REVIEW") {
     mode = "SPACED_REVIEW";
     sourceStrategy = "review-patterns";
@@ -180,25 +199,6 @@ export function selectAdaptiveTraining(input: {
       : masteryDecision.rationale;
     evidence.push(...masteryDecision.gateReasons);
     if (nextEligibleSkill) evidence.push(`next eligible skill ${nextEligibleSkill}`);
-  } else if (assessment?.learningSignal === "blocked" || topMistake === "UNSAFE_APPROACH") {
-    mode = "REMEDIATION";
-    sourceStrategy = "targeted-patterns";
-    difficulty = current;
-    reason = "Safety evidence requires a controlled remediation cycle before increasing challenge.";
-    evidence.push("safety boundary or unsafe approach detected");
-    constraints.push("Keep the task inside the approved isolated lab workflow.");
-  } else if (
-    assessment?.learningSignal === "needs_practice" ||
-    (assessment && assessment.grade < 70) ||
-    input.intelligence.signals.includes("CONCEPT_GAP")
-  ) {
-    mode = "REMEDIATION";
-    sourceStrategy = "targeted-patterns";
-    difficulty -= 1;
-    reason =
-      "Recent evidence indicates a weak or misunderstood concept that should be repaired before progression.";
-    evidence.push(`readiness ${input.intelligence.readiness}`, `focus skill ${primary}`);
-    if (topMistake) evidence.push(`repeated evidence around ${topMistake}`);
   } else if (due.length > 0) {
     mode = "SPACED_REVIEW";
     sourceStrategy = "review-patterns";
