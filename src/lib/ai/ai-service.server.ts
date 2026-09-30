@@ -445,8 +445,10 @@ Return ONLY valid JSON:
     temperature: 0.2,
   });
 
-  // Guardrail: Never let AI jump stage to SOLUTION prematurely
-  if (request.level < request.totalLevels && data.stage === "SOLUTION") {
+  // Guardrail: Never let AI jump stage beyond requested stage prematurely
+  const targetStageIdx = HINT_STAGES.indexOf(request.stage);
+  const dataStageIdx = HINT_STAGES.indexOf(data.stage);
+  if (dataStageIdx > targetStageIdx) {
     data.stage = request.stage;
   }
 
