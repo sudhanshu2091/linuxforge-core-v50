@@ -37,6 +37,7 @@ import {
   type AiOperationName,
   type ValidationResult,
   type HintStage,
+  HINT_STAGES,
   type SkillId,
 } from "./ai-contracts";
 import { recordAiTelemetry } from "./ai-telemetry.server";
@@ -260,11 +261,11 @@ Return ONLY valid JSON matching:
     temperature: 0.3,
   });
 
-  // Strict guardrail: enforce stage clamp
-  if (allowedStage === "CONCEPT" || allowedStage === "DIRECTION" || allowedStage === "COMMAND") {
-    if (data.stage === "SOLUTION") {
-      data.stage = allowedStage;
-    }
+  // Strict guardrail: enforce stage clamp based on deterministic allowedStage
+  const allowedIdx = HINT_STAGES.indexOf(allowedStage);
+  const dataIdx = HINT_STAGES.indexOf(data.stage);
+  if (dataIdx > allowedIdx) {
+    data.stage = allowedStage;
   }
 
   return { response: data, fallbackUsed };
@@ -379,12 +380,25 @@ Return ONLY valid JSON:
     temperature: 0.1,
   });
 
-  // Non-authoritative guardrail: error/blocked execution cannot demonstrate skill
-  if (hasError) {
+  // Non-authoritative guardrail: error, blocked execution, or verification failure cannot demonstrate skill
+  const executionFailed =
+    hasError ||
+    Boolean(request.execution.blockedReason) ||
+    request.execution.exitCode !== 0 ||
+    request.execution.lines.some((l) => l.kind === "error") ||
+    request.verification.status === "BLOCKED_BY_SAFETY_POLICY" ||
+    request.verification.status === "RESULT_CORRECT_SKILL_NOT_DEMONSTRATED" ||
+    (request.verification.status === "INCOMPLETE" && request.verification.score === 0);
+
+  if (executionFailed) {
     data.skillDemonstrated = false;
     if (data.conceptUnderstanding === "solid") {
       data.conceptUnderstanding = "partial";
     }
+  }
+
+  if (request.execution.blockedReason) {
+    data.category = "UNSAFE_APPROACH";
   }
 
   return { response: data, fallbackUsed };

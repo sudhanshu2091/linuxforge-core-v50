@@ -265,9 +265,11 @@ export function validateTutorResponse(data: unknown): ValidationResult<TutorResp
     return { ok: false, error: "Tutor response text must be a non-empty string" };
   }
 
-  const stage = (typeof obj["stage"] === "string" && HINT_STAGES.includes(obj["stage"] as HintStage)
-    ? obj["stage"]
-    : "CONCEPT") as HintStage;
+  const rawStage = obj["stage"];
+  if (typeof rawStage !== "string" || !(HINT_STAGES as readonly string[]).includes(rawStage)) {
+    return { ok: false, error: `Invalid or missing tutor hint stage: ${String(rawStage)}` };
+  }
+  const stage = rawStage as HintStage;
 
   return {
     ok: true,
@@ -292,29 +294,50 @@ export function validateDiagnosisResponse(data: unknown): ValidationResult<Diagn
   const obj = data as Record<string, unknown>;
 
   const rawCat = obj["category"];
-  const category =
-    typeof rawCat === "string" && (OBSERVATION_CATEGORIES as readonly string[]).includes(rawCat)
-      ? (rawCat as ObservationCategory)
-      : null;
+  let category: ObservationCategory | null = null;
+  if (rawCat !== null && rawCat !== undefined) {
+    if (typeof rawCat !== "string" || !(OBSERVATION_CATEGORIES as readonly string[]).includes(rawCat)) {
+      return { ok: false, error: `Invalid diagnosis observation category: ${String(rawCat)}` };
+    }
+    category = rawCat as ObservationCategory;
+  }
 
   const rawUnderstanding = obj["conceptUnderstanding"];
-  const conceptUnderstanding =
-    rawUnderstanding === "solid" || rawUnderstanding === "partial" ? rawUnderstanding : "unclear";
+  if (
+    rawUnderstanding !== "solid" &&
+    rawUnderstanding !== "partial" &&
+    rawUnderstanding !== "unclear"
+  ) {
+    return { ok: false, error: `Invalid conceptUnderstanding: ${String(rawUnderstanding)}; must be unclear, partial, or solid` };
+  }
+  const conceptUnderstanding = rawUnderstanding;
 
-  const skillDemonstrated = obj["skillDemonstrated"] === true;
-  const coaching = typeof obj["coaching"] === "string" && obj["coaching"].trim()
-    ? obj["coaching"].trim().slice(0, 1000)
-    : "Review the mission objective and try again.";
+  if (typeof obj["skillDemonstrated"] !== "boolean") {
+    return { ok: false, error: "Diagnosis skillDemonstrated must be a boolean" };
+  }
+  const skillDemonstrated = obj["skillDemonstrated"];
 
-  const evidence = Array.isArray(obj["evidence"])
-    ? obj["evidence"].filter((e): e is string => typeof e === "string").slice(0, 10)
-    : [];
+  if (typeof obj["intent"] !== "string" || !obj["intent"].trim()) {
+    return { ok: false, error: "Diagnosis intent must be a non-empty string" };
+  }
+  if (typeof obj["approach"] !== "string" || !obj["approach"].trim()) {
+    return { ok: false, error: "Diagnosis approach must be a non-empty string" };
+  }
+  if (typeof obj["coaching"] !== "string" || !obj["coaching"].trim()) {
+    return { ok: false, error: "Diagnosis coaching must be a non-empty string" };
+  }
+  if (!Array.isArray(obj["evidence"])) {
+    return { ok: false, error: "Diagnosis evidence must be an array" };
+  }
+
+  const coaching = obj["coaching"].trim().slice(0, 1000);
+  const evidence = obj["evidence"].filter((e): e is string => typeof e === "string").slice(0, 10);
 
   return {
     ok: true,
     data: {
-      intent: typeof obj["intent"] === "string" ? obj["intent"].slice(0, 500) : "Solve the mission",
-      approach: typeof obj["approach"] === "string" ? obj["approach"].slice(0, 500) : "Interactive shell commands",
+      intent: obj["intent"].trim().slice(0, 500),
+      approach: obj["approach"].trim().slice(0, 500),
       category,
       conceptUnderstanding,
       skillDemonstrated,
@@ -333,16 +356,22 @@ export function validateHintResponse(data: unknown): ValidationResult<HintRespon
     return { ok: false, error: "Hint response text must be a non-empty string" };
   }
 
-  const stage = (typeof obj["stage"] === "string" && HINT_STAGES.includes(obj["stage"] as HintStage)
-    ? obj["stage"]
-    : "CONCEPT") as HintStage;
+  const rawStage = obj["stage"];
+  if (typeof rawStage !== "string" || !(HINT_STAGES as readonly string[]).includes(rawStage)) {
+    return { ok: false, error: `Invalid or missing hint stage: ${String(rawStage)}` };
+  }
+  const stage = rawStage as HintStage;
+
+  if (typeof obj["teachingNote"] !== "string") {
+    return { ok: false, error: "Hint teachingNote must be a string" };
+  }
 
   return {
     ok: true,
     data: {
       text: obj["text"].trim().slice(0, 2000),
       stage,
-      teachingNote: typeof obj["teachingNote"] === "string" ? obj["teachingNote"].slice(0, 1000) : "",
+      teachingNote: obj["teachingNote"].slice(0, 1000),
       conceptGap: typeof obj["conceptGap"] === "string" ? obj["conceptGap"].slice(0, 500) : null,
     },
   };
@@ -364,26 +393,62 @@ export function validateMissionGenerationResponse(data: unknown): ValidationResu
     return { ok: false, error: "Missing mission objective" };
   }
 
-  const rawSkills = Array.isArray(exerciseCandidate["skills"]) ? exerciseCandidate["skills"] : [];
-  const skills = rawSkills.filter((s): s is SkillId =>
-    typeof s === "string" && (VALID_SKILL_IDS as readonly string[]).includes(s),
-  );
-  if (!skills.length) {
-    return { ok: false, error: "Mission must target at least one valid skill" };
+  const rawSkills = exerciseCandidate["skills"];
+  if (!Array.isArray(rawSkills) || rawSkills.length === 0) {
+    return { ok: false, error: "Mission must target at least one skill in an array" };
   }
+  for (const s of rawSkills) {
+    if (typeof s !== "string" || !(VALID_SKILL_IDS as readonly string[]).includes(s)) {
+      return { ok: false, error: `Invalid skill ID in mission skills: ${String(s)}` };
+    }
+  }
+  const skills = rawSkills as SkillId[];
 
-  const difficulty = typeof exerciseCandidate["difficulty"] === "number" && Number.isFinite(exerciseCandidate["difficulty"])
-    ? Math.max(1, Math.min(5, Math.floor(exerciseCandidate["difficulty"])))
-    : 1;
+  const rawDiff = exerciseCandidate["difficulty"];
+  if (
+    typeof rawDiff !== "number" ||
+    !Number.isInteger(rawDiff) ||
+    rawDiff < 1 ||
+    rawDiff > 5
+  ) {
+    return { ok: false, error: `Invalid mission difficulty: ${String(rawDiff)}; must be integer 1-5` };
+  }
+  const difficulty = rawDiff;
 
   const plan = exerciseCandidate["evaluationPlan"];
   if (!plan || typeof plan !== "object") {
     return { ok: false, error: "Executable mission candidate requires evaluationPlan" };
   }
+  const planObj = plan as Record<string, unknown>;
+  if (!Array.isArray(planObj["objectives"]) || planObj["objectives"].length === 0) {
+    return { ok: false, error: "Mission evaluationPlan must have non-empty objectives array" };
+  }
+  for (let i = 0; i < planObj["objectives"].length; i++) {
+    const o = planObj["objectives"][i];
+    if (!o || typeof o !== "object") {
+      return { ok: false, error: `Mission evaluationPlan objective[${i}] must be an object` };
+    }
+    const ob = o as Record<string, unknown>;
+    if (typeof ob["label"] !== "string" || !ob["label"].trim()) {
+      return { ok: false, error: `Mission evaluationPlan objective[${i}] missing label` };
+    }
+    if (typeof ob["path"] !== "string" || !ob["path"].trim()) {
+      return { ok: false, error: `Mission evaluationPlan objective[${i}] missing path` };
+    }
+    if (ob["objectType"] !== "file" && ob["objectType"] !== "directory") {
+      return { ok: false, error: `Mission evaluationPlan objective[${i}] invalid objectType: ${String(ob["objectType"])}` };
+    }
+  }
 
+  // Deterministic ID: use provided id if non-empty string, else assign deterministic id from skills, difficulty, and title slug
+  const titleSlug = exerciseCandidate["title"]
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 32);
   const id = typeof exerciseCandidate["id"] === "string" && exerciseCandidate["id"].trim()
     ? exerciseCandidate["id"].trim()
-    : `adaptive-${skills[0]}-${difficulty}-${Date.now()}`;
+    : `adaptive-${skills[0]}-${difficulty}-${titleSlug || "mission"}`;
 
   const textList = (v: unknown, fallback: string[]): string[] =>
     Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").slice(0, 10) : fallback;
@@ -429,23 +494,43 @@ export function validateAdaptiveReasoningResponse(data: unknown): ValidationResu
   const obj = data as Record<string, unknown>;
 
   const rawMode = obj["recommendedMode"];
-  const recommendedMode = (typeof rawMode === "string" && (LEARNING_MODES as readonly string[]).includes(rawMode)
-    ? rawMode
-    : "GUIDED_PRACTICE") as LearningMode;
+  if (typeof rawMode !== "string" || !(LEARNING_MODES as readonly string[]).includes(rawMode)) {
+    return { ok: false, error: `Invalid learning mode: ${String(rawMode)}` };
+  }
+  const recommendedMode = rawMode as LearningMode;
 
   const rawPrimary = obj["primarySkill"];
-  const primarySkill = (typeof rawPrimary === "string" && (VALID_SKILL_IDS as readonly string[]).includes(rawPrimary)
-    ? rawPrimary
-    : "filesystem") as SkillId;
+  if (typeof rawPrimary !== "string" || !(VALID_SKILL_IDS as readonly string[]).includes(rawPrimary)) {
+    return { ok: false, error: `Invalid primary skill ID: ${String(rawPrimary)}` };
+  }
+  const primarySkill = rawPrimary as SkillId;
 
-  const rawSupporting = Array.isArray(obj["supportingSkills"]) ? obj["supportingSkills"] : [];
-  const supportingSkills = rawSupporting.filter((s): s is SkillId =>
-    typeof s === "string" && (VALID_SKILL_IDS as readonly string[]).includes(s) && s !== primarySkill,
-  );
+  const rawSupporting = obj["supportingSkills"];
+  if (!Array.isArray(rawSupporting)) {
+    return { ok: false, error: "supportingSkills must be an array" };
+  }
+  for (const s of rawSupporting) {
+    if (typeof s !== "string" || !(VALID_SKILL_IDS as readonly string[]).includes(s)) {
+      return { ok: false, error: `Invalid supporting skill ID: ${String(s)}` };
+    }
+  }
+  const supportingSkills = (rawSupporting as SkillId[]).filter((s) => s !== primarySkill);
 
-  const difficulty = typeof obj["difficulty"] === "number" && Number.isFinite(obj["difficulty"])
-    ? Math.max(1, Math.min(5, Math.floor(obj["difficulty"])))
-    : 1;
+  const rawDiff = obj["difficulty"];
+  if (
+    typeof rawDiff !== "number" ||
+    !Number.isInteger(rawDiff) ||
+    rawDiff < 1 ||
+    rawDiff > 5
+  ) {
+    return { ok: false, error: `Invalid difficulty: ${String(rawDiff)}; must be integer 1-5` };
+  }
+  const difficulty = rawDiff;
+
+  if (typeof obj["pedagogicalRationale"] !== "string" || !obj["pedagogicalRationale"].trim()) {
+    return { ok: false, error: "Missing pedagogicalRationale in adaptive reasoning response" };
+  }
+  const pedagogicalRationale = obj["pedagogicalRationale"].slice(0, 1000);
 
   const focusMistakes = Array.isArray(obj["focusMistakes"])
     ? obj["focusMistakes"].filter((m): m is string => typeof m === "string").slice(0, 10)
@@ -458,7 +543,7 @@ export function validateAdaptiveReasoningResponse(data: unknown): ValidationResu
       primarySkill,
       supportingSkills,
       difficulty,
-      pedagogicalRationale: typeof obj["pedagogicalRationale"] === "string" ? obj["pedagogicalRationale"].slice(0, 1000) : "Adaptive selection based on learner mastery and mistake history.",
+      pedagogicalRationale,
       focusMistakes,
       alternativeFraming: typeof obj["alternativeFraming"] === "string" ? obj["alternativeFraming"].slice(0, 500) : undefined,
     },

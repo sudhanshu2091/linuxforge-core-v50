@@ -97,12 +97,7 @@ function strategyFor(input: DynamicTeachingInput): TeachingStrategy {
 function pacingFor(input: DynamicTeachingInput, strategy: TeachingStrategy): TeachingPacing {
   if (strategy === "ORIENT" || strategy === "ASSESSMENT_COACH" || strategy === "REFLECT")
     return "CONCISE";
-  if (
-    hasSignal(input, "CONCEPT_GAP") ||
-    input.intelligence.confidence < 50 ||
-    input.session.plan.mode === "REMEDIATION"
-  )
-    return "DEEP";
+  if (hasSignal(input, "CONCEPT_GAP") || input.intelligence.confidence < 50) return "DEEP";
   if (input.intelligence.readiness >= 78 && input.intelligence.independence >= 70) return "CONCISE";
   return "STANDARD";
 }
@@ -113,15 +108,8 @@ function hintPolicyFor(input: DynamicTeachingInput): HintPolicy {
   // In active practice, high dependency should instead minimize unsolicited
   // help and preserve independent problem solving.
   if (input.session.phase === "TEACH" && hasSignal(input, "CONCEPT_GAP")) return "PROGRESSIVE";
-  if (input.session.plan.mode === "ASSESSMENT" || input.session.plan.mode === "PROGRESSION")
-    return "MINIMAL";
   if (input.intelligence.hintDependency >= 60) return "MINIMAL";
-  if (
-    input.intelligence.hintDependency >= 35 ||
-    hasSignal(input, "CONCEPT_GAP") ||
-    input.session.plan.mode === "REMEDIATION" ||
-    input.session.plan.mode === "GUIDED_PRACTICE"
-  )
+  if (input.intelligence.hintDependency >= 35 || hasSignal(input, "CONCEPT_GAP"))
     return "PROGRESSIVE";
   return "ON_REQUEST";
 }

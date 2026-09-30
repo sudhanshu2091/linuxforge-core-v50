@@ -42,13 +42,7 @@ export function analyzeLearner(
     .slice(0, 4)
     .map((s) => s.skillId);
   const fragileSkills = skills
-    .filter(
-      (s) =>
-        s.mastery >= 55 &&
-        (s.confidence < 60 ||
-          (s.retention ?? s.mastery) < 60 ||
-          s.recentMistakes.some((m) => m === "SKILL_BYPASS" || m === "UNSAFE_APPROACH")),
-    )
+    .filter((s) => s.mastery >= 55 && (s.confidence < 60 || (s.retention ?? s.mastery) < 60))
     .sort((a, b) => (a.retention ?? a.mastery) - (b.retention ?? b.mastery))
     .slice(0, 4)
     .map((s) => s.skillId);
@@ -95,11 +89,7 @@ export function analyzeLearner(
   if (focusSkills.length) signals.push("BUILDING");
   if (fragileSkills.length) signals.push("FRAGILE");
   if (hintDependency >= 55) signals.push("DEPENDENT");
-  if (
-    repeatedMistakes.some(
-      (m) => m === "CONCEPT_CONFUSION" || m === "MISREAD_QUESTION" || m === "SKILL_BYPASS",
-    )
-  )
+  if (repeatedMistakes.some((m) => m === "CONCEPT_CONFUSION" || m === "MISREAD_QUESTION"))
     signals.push("CONCEPT_GAP");
   if (
     dominantMistakes.length &&

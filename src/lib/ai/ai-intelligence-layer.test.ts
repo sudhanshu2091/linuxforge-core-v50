@@ -65,12 +65,9 @@ describe("LinuxForge AI Intelligence Layer — Contracts & Schema Validation", (
       expect(validateTutorResponse({ text: "   " }).ok).toBe(false);
     });
 
-    it("normalizes unrecognized stage to CONCEPT", () => {
+    it("rejects unrecognized tutor hint stage", () => {
       const result = validateTutorResponse({ text: "Hello", stage: "INVALID_STAGE" });
-      expect(result.ok).toBe(true);
-      if (result.ok) {
-        expect(result.data.stage).toBe("CONCEPT");
-      }
+      expect(result.ok).toBe(false);
     });
   });
 
@@ -93,19 +90,28 @@ describe("LinuxForge AI Intelligence Layer — Contracts & Schema Validation", (
       }
     });
 
-    it("normalizes invalid category to null and invalid understanding to unclear", () => {
-      const raw = {
+    it("rejects invalid category or invalid understanding", () => {
+      const invalidCat = {
         intent: "Test",
         approach: "Test",
         category: "NOT_A_CATEGORY",
-        conceptUnderstanding: "super_solid",
+        conceptUnderstanding: "solid",
+        skillDemonstrated: true,
+        coaching: "Test coaching",
+        evidence: [],
       };
-      const result = validateDiagnosisResponse(raw);
-      expect(result.ok).toBe(true);
-      if (result.ok) {
-        expect(result.data.category).toBe(null);
-        expect(result.data.conceptUnderstanding).toBe("unclear");
-      }
+      expect(validateDiagnosisResponse(invalidCat).ok).toBe(false);
+
+      const invalidUnder = {
+        intent: "Test",
+        approach: "Test",
+        category: "TYPO",
+        conceptUnderstanding: "super_solid",
+        skillDemonstrated: true,
+        coaching: "Test coaching",
+        evidence: [],
+      };
+      expect(validateDiagnosisResponse(invalidUnder).ok).toBe(false);
     });
   });
 
@@ -212,19 +218,33 @@ describe("LinuxForge AI Intelligence Layer — Contracts & Schema Validation", (
       }
     });
 
-    it("normalizes unrecognized mode to GUIDED_PRACTICE and unrecognized skill to filesystem", () => {
-      const raw = {
+    it("rejects unrecognized mode, unrecognized skill, or invalid difficulty", () => {
+      const invalidMode = {
         recommendedMode: "UNKNOWN_MODE",
-        primarySkill: "hacking",
-        difficulty: 10,
+        primarySkill: "filesystem",
+        supportingSkills: [],
+        difficulty: 2,
+        pedagogicalRationale: "Reason",
       };
-      const result = validateAdaptiveReasoningResponse(raw);
-      expect(result.ok).toBe(true);
-      if (result.ok) {
-        expect(result.data.recommendedMode).toBe("GUIDED_PRACTICE");
-        expect(result.data.primarySkill).toBe("filesystem");
-        expect(result.data.difficulty).toBe(5); // clamped to 1-5
-      }
+      expect(validateAdaptiveReasoningResponse(invalidMode).ok).toBe(false);
+
+      const invalidSkill = {
+        recommendedMode: "GUIDED_PRACTICE",
+        primarySkill: "hacking",
+        supportingSkills: [],
+        difficulty: 2,
+        pedagogicalRationale: "Reason",
+      };
+      expect(validateAdaptiveReasoningResponse(invalidSkill).ok).toBe(false);
+
+      const invalidDiff = {
+        recommendedMode: "GUIDED_PRACTICE",
+        primarySkill: "filesystem",
+        supportingSkills: [],
+        difficulty: 10,
+        pedagogicalRationale: "Reason",
+      };
+      expect(validateAdaptiveReasoningResponse(invalidDiff).ok).toBe(false);
     });
   });
 });
@@ -702,3 +722,248 @@ describe("LinuxForge AI Mission Generation & Deterministic V2 Validation Pipelin
     expect(reasoningFallback.primarySkill).toBeDefined();
   });
 });
+
+describe("Integration & Architectural Boundary Invariants", () => {
+    beforeEach(() => {
+      clearAiTelemetry();
+      vi.restoreAllMocks();
+    });
+
+    it("B. diagnosis guardrail rejects skill demonstration across all failure types (exit code, blocked, verification fail, zero mutation)", async () => {
+      // Mock provider falsely claiming skill demonstrated
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    intent: "Setup files",
+                    approach: "Commands",
+                    category: "TYPO",
+                    conceptUnderstanding: "solid",
+                    skillDemonstrated: true,
+                    coaching: "Good try",
+                    evidence: ["evidence"],
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+
+      // Case 1: Non-zero exit code
+      const diagExitCode = await aiDiagnosisService(
+        {
+          contract: { id: "c1", title: "T", objective: "Obj", requiredSkills: ["filesystem"] },
+          rawCommand: "mkdir /root/secret",
+          execution: { exitCode: 1, lines: [{ kind: "error", text: "Permission denied" }], mutationCount: 0 },
+          verification: { status: "INCOMPLETE", score: 0, objectives: [] },
+          history: [],
+          hintsUsed: 0,
+          language: "English",
+        },
+        testConfig,
+      );
+      expect(diagExitCode.response.skillDemonstrated).toBe(false);
+
+      // Case 2: Blocked by safety policy
+      const diagBlocked = await aiDiagnosisService(
+        {
+          contract: { id: "c1", title: "T", objective: "Obj", requiredSkills: ["filesystem"] },
+          rawCommand: "rm -rf /",
+          execution: { exitCode: 1, lines: [], mutationCount: 0, blockedReason: "Blocked by lab safety policy" },
+          verification: { status: "BLOCKED_BY_SAFETY_POLICY", score: 0, objectives: [] },
+          history: [],
+          hintsUsed: 0,
+          language: "English",
+        },
+        testConfig,
+      );
+      expect(diagBlocked.response.skillDemonstrated).toBe(false);
+      expect(diagBlocked.response.category).toBe("UNSAFE_APPROACH");
+
+      // Case 3: Verification failure (RESULT_CORRECT_SKILL_NOT_DEMONSTRATED)
+      const diagVerifyFail = await aiDiagnosisService(
+        {
+          contract: { id: "c1", title: "T", objective: "Obj", requiredSkills: ["iteration"] },
+          rawCommand: "touch a b c",
+          execution: { exitCode: 0, lines: [], mutationCount: 3 },
+          verification: { status: "RESULT_CORRECT_SKILL_NOT_DEMONSTRATED", score: 0, objectives: [] },
+          history: [],
+          hintsUsed: 0,
+          language: "English",
+        },
+        testConfig,
+      );
+      expect(diagVerifyFail.response.skillDemonstrated).toBe(false);
+
+      // Case 4: Zero mutation with score 0
+      const diagZeroMutation = await aiDiagnosisService(
+        {
+          contract: { id: "c1", title: "T", objective: "Obj", requiredSkills: ["filesystem"] },
+          rawCommand: "ls -la",
+          execution: { exitCode: 0, lines: [], mutationCount: 0 },
+          verification: { status: "INCOMPLETE", score: 0, objectives: [] },
+          history: [],
+          hintsUsed: 0,
+          language: "English",
+        },
+        testConfig,
+      );
+      expect(diagZeroMutation.response.skillDemonstrated).toBe(false);
+    });
+
+    it("C. hint service clamps premature stage to requested level", async () => {
+      // Model attempts to return SOLUTION when stage is CONCEPT
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    text: "Run chmod 750 workspace",
+                    stage: "SOLUTION",
+                    teachingNote: "Direct answer",
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+
+      const hintReq: HintRequest = {
+        objective: "Configure directory permissions",
+        requiredSkills: ["permissions"],
+        level: 1,
+        totalLevels: 4,
+        stage: "CONCEPT",
+        baseHint: "Consider numeric octals",
+      };
+
+      const { response } = await aiHintService(hintReq, testConfig);
+      expect(response.stage).toBe("CONCEPT");
+    });
+
+    it("E. adaptive reasoning integrates with TrainingDecision requirements", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    recommendedMode: "REMEDIATION",
+                    primarySkill: "permissions",
+                    supportingSkills: ["filesystem"],
+                    difficulty: 2,
+                    pedagogicalRationale: "Address recurring permission misconfiguration",
+                    focusMistakes: ["UNSAFE_APPROACH"],
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+
+      const reasoningReq: AdaptiveReasoningRequest = {
+        skills: [
+          {
+            skillId: "permissions",
+            mastery: 30,
+            attempts: 4,
+            successfulAttempts: 1,
+            recentScore: 40,
+            recentMistakes: ["UNSAFE_APPROACH"],
+            hintDependency: 40,
+            confidence: 30,
+            lastPracticed: null,
+            nextReview: null,
+          },
+        ],
+        recentMistakes: ["UNSAFE_APPROACH"],
+        currentDifficulty: 2,
+      };
+
+      const { response, fallbackUsed } = await aiAdaptiveReasoningService(reasoningReq, testConfig);
+      expect(fallbackUsed).toBe(false);
+      expect(response.recommendedMode).toBe("REMEDIATION");
+      expect(response.primarySkill).toBe("permissions");
+      expect(response.supportingSkills).toContain("filesystem");
+      expect(response.difficulty).toBe(2);
+    });
+
+    it("I. AI responses cannot manufacture authoritative grades, XP, mastery, or verification verdicts", () => {
+      // Regardless of what AI emits, AI contracts only return advisory responses
+      const tutorResult = validateTutorResponse({
+        text: "Tutor text",
+        stage: "CONCEPT",
+        grade: 100, // Forbidden attempt to inject grade
+        xp: 500, // Forbidden attempt to award XP
+        status: "COMPLETE", // Forbidden attempt to decide verification
+      });
+      expect(tutorResult.ok).toBe(true);
+      if (tutorResult.ok) {
+        expect((tutorResult.data as any).grade).toBeUndefined();
+        expect((tutorResult.data as any).xp).toBeUndefined();
+        expect((tutorResult.data as any).status).toBeUndefined();
+      }
+
+      const diagnosisResult = validateDiagnosisResponse({
+        intent: "Test intent",
+        approach: "Test approach",
+        category: "TYPO",
+        conceptUnderstanding: "partial",
+        skillDemonstrated: false,
+        coaching: "Try again",
+        evidence: ["error"],
+        xpEarned: 100,
+        grade: 100,
+      });
+      expect(diagnosisResult.ok).toBe(true);
+      if (diagnosisResult.ok) {
+        expect((diagnosisResult.data as any).xpEarned).toBeUndefined();
+        expect((diagnosisResult.data as any).grade).toBeUndefined();
+      }
+    });
+
+    it("J. repeated validation of the same mission candidate produces identical deterministic mission ID", () => {
+      const candidateWithoutId = {
+        exercise: {
+          title: "Hardening SSH Configuration",
+          objective: "Ensure sshd_config has PermitRootLogin no",
+          skills: ["hardening"],
+          difficulty: 3,
+          evaluationPlan: {
+            objectives: [
+              {
+                label: "PermitRootLogin is disabled",
+                path: "etc/ssh/sshd_config",
+                objectType: "file",
+              },
+            ],
+            requiredCommandKinds: ["chmod"],
+            minimumMutations: 1,
+          },
+        },
+        pedagogicalRationale: "Security hardening drill",
+      };
+
+      const result1 = validateMissionGenerationResponse(candidateWithoutId);
+      const result2 = validateMissionGenerationResponse(candidateWithoutId);
+
+      expect(result1.ok).toBe(true);
+      expect(result2.ok).toBe(true);
+      if (result1.ok && result2.ok) {
+        expect(result1.data.exercise.id).toBe(result2.data.exercise.id);
+        expect(result1.data.exercise.id).toContain("adaptive-hardening-3");
+      }
+    });
+  });

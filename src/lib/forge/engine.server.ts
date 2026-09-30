@@ -22,16 +22,10 @@ import {
   appendChallengeEvents,
   appendNarrativeEvent,
   awardProgressionXp,
-  persistValidatedAdaptiveMission,
   recordHintUsage,
   saveAttempt,
   updateSkillMemory,
 } from "./persistence.server";
-import { buildAdaptiveMissionCandidate } from "@/lib/ai/adaptive-mission-bridge";
-import { buildMissionBlueprint } from "@/lib/ai/mission-generator";
-import { aiMissionGenerationService } from "@/lib/ai/ai-service.server";
-
-export { persistValidatedAdaptiveMission } from "./persistence.server";
 import { aiObserver } from "./observer.server";
 import {
   buildMissionAssessment,
@@ -42,13 +36,10 @@ import { verify } from "./verifier.server";
 import { SKILL_LABELS } from "./types";
 import { buildAdaptivePlan } from "@/lib/learner/adaptive-plan";
 import { decideProgression } from "@/lib/learner/mastery-engine";
-import { analyzeLearner } from "@/lib/ai/learner-intelligence";
-import { selectAdaptiveTraining, type TrainingDecision } from "@/lib/ai/adaptive-training";
 import { buildGuidedHint } from "@/lib/ai/hint-engine";
 import type { ObservationCategory as HintObservationCategory } from "@/lib/forge/types";
 import { redactLines, redactText } from "@/lib/security-redaction";
 import type {
-  AdaptiveExercise,
   ObservationCategory,
   AttemptView,
   MissionState,
@@ -381,12 +372,11 @@ async function loadMissionTranscript(
   return lines.slice(-120);
 }
 
-export function pickNext(
+function pickNext(
   attempts: AttemptRow[],
   skills: SkillMemoryView[],
   currentId: string,
   generatedContracts: Contract[] = [],
-  trainingDecision?: MissionState["trainingDecision"] | TrainingDecision | null,
 ): string | null {
   /*
    * Next-mission selection is advisory.
@@ -408,90 +398,41 @@ export function pickNext(
     ]),
   );
 
-  const done = (id: string): boolean => {
-    if (byId.get(id)?.status === "COMPLETE") return true;
-    if (isSkillId(id)) {
-      const hasCompletedMissionWithSkill = safeAttempts.some(
-        (a) =>
-          a.status === "COMPLETE" &&
-          (contractById(a.challenge_id)?.requiredSkills.includes(id) ||
-            safeGeneratedContracts
-              .find((g) => g.id === a.challenge_id)
-              ?.requiredSkills.includes(id)),
-      );
-      const hasSkillMastery = safeSkills.some(
-        (s) => s.skillId === id && ((s.successfulAttempts ?? 0) > 0 || s.mastery >= 60),
-      );
-      return hasCompletedMissionWithSkill || hasSkillMastery;
-    }
-    return false;
-  };
+  const done = (id: string): boolean =>
+    byId.get(id)?.status === "COMPLETE";
 
   let desiredDifficulty = 1;
   let focusSkills: SkillId[] = [];
-  let preferredPrimary: SkillId | null = null;
 
-  if (trainingDecision) {
-    desiredDifficulty = trainingDecision.difficulty;
-    preferredPrimary = trainingDecision.primarySkill;
-    focusSkills = [
-      trainingDecision.primarySkill,
-      ...trainingDecision.supportingSkills,
-      ...(trainingDecision.journeyNextSkills ?? []),
-    ];
-  } else {
-    try {
-      const currentContract = contractById(currentId);
-      const mistakeCategories = safeSkills
-        .flatMap((s) => s.recentMistakes)
-        .filter((m): m is ObservationCategory => typeof m === "string");
-      const intelligence = analyzeLearner(safeSkills, mistakeCategories);
-      const computedDecision = selectAdaptiveTraining({
-        skills: safeSkills,
-        intelligence,
-        currentDifficulty: currentContract?.difficulty ?? 1,
-      });
+  try {
+    const currentContract = contractById(currentId);
 
-      desiredDifficulty = computedDecision.difficulty;
-      preferredPrimary = computedDecision.primarySkill;
-      focusSkills = [
-        computedDecision.primarySkill,
-        ...computedDecision.supportingSkills,
-        ...(computedDecision.journeyNextSkills ?? []),
-      ];
-    } catch {
-      try {
-        const currentContract = contractById(currentId);
-        const plan = buildAdaptivePlan({
-          skills: safeSkills,
-          currentDifficulty: currentContract?.difficulty ?? 1,
-        });
+    const plan = buildAdaptivePlan({
+      skills: safeSkills,
+      currentDifficulty: currentContract?.difficulty ?? 1,
+    });
 
-        if (
-          plan &&
-          typeof plan === "object" &&
-          Array.isArray(plan.focusSkills)
-        ) {
-          focusSkills = plan.focusSkills.filter(isSkillId);
-        }
-
-        if (
-          plan &&
-          typeof plan === "object" &&
-          typeof plan.desiredDifficulty === "number" &&
-          Number.isFinite(plan.desiredDifficulty)
-        ) {
-          desiredDifficulty = plan.desiredDifficulty;
-        }
-      } catch (fallbackError) {
-        console.error(
-          "[LinuxForge mission-state] adaptive fallback failed in pickNext",
-          fallbackError,
-        );
-        desiredDifficulty = 1;
-        focusSkills = [];
-      }
+    if (
+      plan &&
+      typeof plan === "object" &&
+      Array.isArray(plan.focusSkills)
+    ) {
+      focusSkills = plan.focusSkills.filter(isSkillId);
     }
+
+    if (
+      plan &&
+      typeof plan === "object" &&
+      typeof plan.desiredDifficulty === "number" &&
+      Number.isFinite(plan.desiredDifficulty)
+    ) {
+      desiredDifficulty = plan.desiredDifficulty;
+    }
+  } catch (error) {
+    console.error(
+      "[LinuxForge mission-state] adaptive plan failed in pickNext; using fallback",
+      error,
+    );
   }
 
   const allContracts: Contract[] = [
@@ -535,8 +476,6 @@ export function pickNext(
       focus.has(skill),
     ).length;
 
-    const primaryBonus = preferredPrimary && requiredSkills.includes(preferredPrimary) ? 20 : 0;
-
     const difficultyDistance = Math.abs(
       difficulty - desiredDifficulty,
     );
@@ -551,14 +490,9 @@ export function pickNext(
       2 - order / 100,
     );
 
-    const isGenerated = safeGeneratedContracts.some((g) => g.id === contract.id);
-    const adaptiveBonus = isGenerated ? 50 : 0;
-
     return {
       contract,
       score:
-        adaptiveBonus +
-        primaryBonus +
         skillMatch * 10 +
         difficultyScore +
         orderScore,
@@ -587,71 +521,23 @@ export async function startOrRestoreMission(
   requestedId?: string,
 ): Promise<{ challengeId: string; resumed: boolean }> {
   await ensureLab(db, userId);
-  const [attempts, skills] = await Promise.all([
-    loadAttempts(db, userId),
-    loadSkills(db, userId),
-  ]);
-  const generated = await loadGeneratedExercises(db, userId);
+  const attempts = await loadAttempts(db, userId);
+  const done = (id: string) => attempts.find((a) => a.challenge_id === id)?.status === "COMPLETE";
 
-  const done = (id: string): boolean => {
-    if (attempts.find((a) => a.challenge_id === id)?.status === "COMPLETE") {
-      return true;
-    }
-    if (isSkillId(id)) {
-      const hasCompletedMissionWithSkill = attempts.some(
-        (a) =>
-          a.status === "COMPLETE" &&
-          (contractById(a.challenge_id)?.requiredSkills.includes(id) ||
-            generated.find((g) => g.id === a.challenge_id)?.requiredSkills.includes(id)),
-      );
-      const hasSkillMastery = skills.some(
-        (s) => s.skillId === id && ((s.successfulAttempts ?? 0) > 0 || s.mastery >= 60),
-      );
-      return hasCompletedMissionWithSkill || hasSkillMastery;
-    }
-    return false;
-  };
+  const generated = await loadGeneratedExercises(db, userId);
   let challengeId =
     requestedId && (contractById(requestedId) || generated.some((c) => c.id === requestedId))
       ? requestedId
       : null;
   if (!challengeId) {
-    // 1. Resume existing incomplete mission: check generated/adaptive first, then static
-    const inProgressGenerated = generated.find(
-      (c) => !done(c.id) && attempts.some((a) => a.challenge_id === c.id && a.status !== "COMPLETE"),
+    // Story position: the earliest unlocked, unfinished mission.
+    const inProgress = CONTRACTS.find(
+      (c) => !done(c.id) && attempts.some((a) => a.challenge_id === c.id),
     );
-    const inProgressStatic = CONTRACTS.find(
-      (c) => !done(c.id) && attempts.some((a) => a.challenge_id === c.id && a.status !== "COMPLETE"),
-    );
-    const inProgress = inProgressGenerated ?? inProgressStatic;
-
-    if (inProgress) {
-      challengeId = inProgress.id;
-    } else {
-      // 2. Prioritize valid uncompleted adaptive generated missions whose prerequisites are satisfied
-      const openGenerated = generated.filter(
-        (c) => !done(c.id) && c.prerequisites.every(done),
-      );
-
-      const nextOpenStatic = CONTRACTS.filter(
-        (c) => !done(c.id) && c.prerequisites.every(done),
-      ).sort((a, b) => a.order - b.order)[0];
-
-      const nextFromPick = pickNext(
-        attempts,
-        skills,
-        "",
-        openGenerated,
-      );
-
-      challengeId =
-        (nextFromPick && openGenerated.some((g) => g.id === nextFromPick)
-          ? nextFromPick
-          : null) ??
-        openGenerated[0]?.id ??
-        nextOpenStatic?.id ??
-        CONTRACTS[0]!.id;
-    }
+    const nextOpen = CONTRACTS.filter((c) => !done(c.id) && c.prerequisites.every(done)).sort(
+      (a, b) => a.order - b.order,
+    )[0];
+    challengeId = inProgress?.id ?? nextOpen?.id ?? generated[0]?.id ?? CONTRACTS[0]!.id;
   }
 
   const selectedContract =
@@ -1069,55 +955,6 @@ export async function loadMissionState(
     "[LinuxForge mission-state] CHECKPOINT G: before-pickNext",
   );
 
-  let trainingDecision: MissionState["trainingDecision"] = null;
-  try {
-    const assessmentEvent = [...safeChallengeEvents]
-      .reverse()
-      .find((e) => e.kind === "assessment");
-    const storedDecision = assessmentEvent
-      ? (asRecord(assessmentEvent.payload)["trainingDecision"] as MissionState["trainingDecision"])
-      : null;
-
-    if (storedDecision) {
-      trainingDecision = storedDecision;
-    } else {
-      const mistakeCategories = safeSkills
-        .flatMap((s) => s.recentMistakes)
-        .concat(lastObservation?.category ? [lastObservation.category] : [])
-        .filter((m): m is ObservationCategory => typeof m === "string");
-      const intelligence = analyzeLearner(safeSkills, mistakeCategories);
-      trainingDecision = selectAdaptiveTraining({
-        skills: safeSkills,
-        intelligence,
-        assessment: lastVerification
-          ? {
-              learningSignal:
-                lastVerification.status === "COMPLETE"
-                  ? "mastered"
-                  : lastVerification.status === "BLOCKED_BY_SAFETY_POLICY"
-                    ? "blocked"
-                    : "needs_practice",
-              grade: lastVerification.score,
-              mistakeBreakdown:
-                lastObservation?.category &&
-                lastObservation.category !== "VALID_ALTERNATIVE" &&
-                lastObservation.category !== "INDEPENDENT_SOLUTION"
-                  ? [{ category: lastObservation.category, count: 1 }]
-                  : [],
-              hintsUsed: safeHintRows.length,
-            }
-          : null,
-        currentDifficulty: contract.difficulty,
-      });
-    }
-  } catch (error) {
-    console.error(
-      "[LinuxForge mission-state] trainingDecision computation failed",
-      error,
-    );
-    trainingDecision = null;
-  }
-
   let nextChallengeId: string | null = null;
 
   try {
@@ -1126,7 +963,6 @@ export async function loadMissionState(
       safeSkills,
       contract.id,
       safeGeneratedContracts,
-      trainingDecision,
     );
 
     console.error(
@@ -1187,8 +1023,6 @@ export async function loadMissionState(
     lastObservation,
 
     nextChallengeId,
-
-    trainingDecision,
   };
 }
 
@@ -1472,31 +1306,6 @@ export async function assessMission(
     progression,
   };
 
-  const existingAssessmentEvents = events.filter((e) => e.kind === "assessment");
-  const lastAssessmentEvent =
-    existingAssessmentEvents.length > 0
-      ? existingAssessmentEvents[existingAssessmentEvents.length - 1]
-      : null;
-
-  if (lastAssessmentEvent) {
-    const lastPayload = asRecord(lastAssessmentEvent.payload);
-    const isEquivalent =
-      (lastPayload["status"] === "COMPLETE" && assessment.status === "COMPLETE") ||
-      (lastPayload["status"] === assessment.status &&
-        lastPayload["grade"] === assessment.grade &&
-        lastPayload["objectivesMet"] === assessment.objectivesMet &&
-        lastPayload["objectivesTotal"] === assessment.objectivesTotal &&
-        lastPayload["learningSignal"] === enrichedAssessment.learningSignal);
-
-    if (isEquivalent) {
-      const existingTrainingDecision = lastPayload["trainingDecision"] as TrainingDecision | undefined;
-      return {
-        ...enrichedAssessment,
-        ...(existingTrainingDecision ? { trainingDecision: existingTrainingDecision } : {}),
-      };
-    }
-  }
-
   await appendChallengeEvents(db, userId, challengeId, [
     {
       kind: "assessment",
@@ -1513,79 +1322,9 @@ export async function assessMission(
         masteredSkills: progression.masteredSkills,
         fragileSkills: progression.fragileSkills,
         eligibleNextSkills: progression.eligibleNextSkills,
-        trainingDecision: enrichedAssessment.trainingDecision,
       },
     },
   ]);
-
-  if (enrichedAssessment.trainingDecision) {
-    try {
-      let knownScenarioArtifacts: string[] = [];
-      let storyObjects: string[] = [];
-      try {
-        const lab = await ensureLab(db, userId);
-        if (lab?.id) {
-          const { views } = await loadWorld(db, userId, lab.id);
-          if (Array.isArray(views)) {
-            knownScenarioArtifacts = views.map((v) => v.path);
-            storyObjects = views.map((v) => v.name);
-          }
-        }
-      } catch {
-        // lab/world is optional
-      }
-
-      const recentMistakes = assessment.mistakeBreakdown.map((m) => m.category);
-
-      let aiCandidateExercise: AdaptiveExercise | undefined = undefined;
-      try {
-        const trainingDecision = enrichedAssessment.trainingDecision as TrainingDecision;
-        const blueprint = buildMissionBlueprint({
-          skills,
-          intelligence: analyzeLearner(skills, recentMistakes),
-          recentMistakes,
-          storyObjects,
-          currentDifficulty: contract.difficulty,
-          trainingDecision,
-        });
-        const { response, fallbackUsed } = await aiMissionGenerationService({
-          trainingDecision,
-          blueprint,
-          skills,
-          recentMistakes,
-          knownScenarioArtifacts,
-          difficulty: contract.difficulty,
-        });
-        if (!fallbackUsed && response?.exercise) {
-          aiCandidateExercise = response.exercise;
-        }
-      } catch {
-        // AI proposal generation failure safely swallowed; buildAdaptiveMissionCandidate will use deterministic candidate
-      }
-
-      const candidate = buildAdaptiveMissionCandidate({
-        skills,
-        trainingDecision: enrichedAssessment.trainingDecision,
-        assessment: {
-          learningSignal: enrichedAssessment.learningSignal,
-          grade: assessment.grade,
-          hintsUsed: hints.length,
-          mistakeBreakdown: assessment.mistakeBreakdown,
-        },
-        recentMistakes,
-        storyObjects,
-        currentDifficulty: contract.difficulty,
-        knownScenarioArtifacts,
-        candidateExercise: aiCandidateExercise,
-      });
-
-      if (candidate.validation.ok && candidate.contract && candidate.exercise) {
-        await persistValidatedAdaptiveMission(db, userId, candidate);
-      }
-    } catch (materializeError) {
-      console.error("[LinuxForge engine] materializeAdaptiveMission failed", materializeError);
-    }
-  }
 
   return enrichedAssessment;
 }
@@ -1735,27 +1474,25 @@ export async function runLabCommand(
 
   if (xpAwarded > 0) await awardProgressionXp(db, userId, xpAwarded);
 
-  const justCompleted = nowComplete && !alreadyComplete;
-
-  if (!execution.blocked && (justCompleted || (!alreadyComplete && execution.mutationCount > 0))) {
+  if (!execution.blocked && (nowComplete || execution.mutationCount > 0)) {
     await appendNarrativeEvent(db, {
       userId,
       challengeId,
-      eventType: justCompleted ? "mission_complete" : "world_change",
-      summary: justCompleted
+      eventType: nowComplete ? "mission_complete" : "world_change",
+      summary: nowComplete
         ? `${contract.title} completed — ${contract.successStory}`
         : `Worked in the lab during ${contract.title}: ${execution.evidence.commands
             .slice(0, 3)
             .map((command) => redactText(command).text)
             .join("; ")}`,
       relatedSkillIds: contract.requiredSkills,
-      importance: justCompleted ? 4 : 2,
+      importance: nowComplete ? 4 : 2,
     });
   }
 
-  if (!execution.blocked && !alreadyComplete) {
+  if (!execution.blocked) {
     await updateSkillMemory(db, userId, contract.requiredSkills, {
-      complete: nowComplete,
+      complete: nowComplete && !alreadyComplete,
       score: verification.score,
       hintsUsed,
       mistake: observation.category && !nowComplete ? observation.category : null,
@@ -1763,23 +1500,6 @@ export async function runLabCommand(
       expectedMinutes: Math.max(1, contract.difficulty * 5),
       difficulty: contract.difficulty,
     });
-  }
-
-  // Meaningful completion / assessment boundary:
-  // When a run completes the mission or produces a terminal verification outcome,
-  // invoke the existing assessMission pipeline to record progression and training decision.
-  if (
-    nowComplete ||
-    verification.status === "COMPLETE" ||
-    verification.status === "BLOCKED_BY_SAFETY_POLICY" ||
-    verification.status === "RESULT_CORRECT_SKILL_NOT_DEMONSTRATED" ||
-    verification.status === "RESULT_INCORRECT_SKILL_DEMONSTRATED"
-  ) {
-    try {
-      await assessMission(db, userId, challengeId);
-    } catch (assessError) {
-      console.error("[LinuxForge engine] assessMission post-run failure", assessError);
-    }
   }
 
   const state = await loadMissionState(db, userId, challengeId, execution.cwd, language);
