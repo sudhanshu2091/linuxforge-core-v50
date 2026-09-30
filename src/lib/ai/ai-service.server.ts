@@ -38,8 +38,6 @@ import {
   type ValidationResult,
   type HintStage,
   type SkillId,
-  type ObservationCategory,
-  OBSERVATION_CATEGORIES,
 } from "./ai-contracts";
 import { recordAiTelemetry } from "./ai-telemetry.server";
 import { createDeterministicCandidate } from "./adaptive-mission-bridge";
@@ -48,7 +46,6 @@ import { analyzeLearner } from "./learner-intelligence";
 import { selectAdaptiveTraining } from "./adaptive-training";
 import type { Contract } from "@/lib/forge/contracts.server";
 import { deterministicObserver } from "@/lib/forge/observer.server";
-import type { VerificationStatus } from "@/lib/forge/types";
 
 /* ------------------------------------------------------------------ */
 /* JSON Extraction Helper                                             */
@@ -285,7 +282,7 @@ export function deterministicDiagnosisFallback(request: DiagnosisRequest): Diagn
     title: request.contract.title,
     storyIntro: "",
     objective: request.contract.objective,
-    requiredSkills: request.contract.requiredSkills as SkillId[],
+    requiredSkills: request.contract.requiredSkills as any,
     allowedApproaches: request.contract.allowedApproaches ?? [],
     bannedShortcuts: request.contract.bannedShortcuts ?? [],
     difficulty: 1,
@@ -316,14 +313,7 @@ export function deterministicDiagnosisFallback(request: DiagnosisRequest): Diagn
       mutationCount: request.execution.mutationCount,
     },
     verification: {
-      status: ((): VerificationStatus => {
-        const raw = request.verification.status;
-        if (raw === "COMPLETE" || raw === "passed") return "COMPLETE";
-        if (raw === "RESULT_CORRECT_SKILL_NOT_DEMONSTRATED") return "RESULT_CORRECT_SKILL_NOT_DEMONSTRATED";
-        if (raw === "RESULT_INCORRECT_SKILL_DEMONSTRATED") return "RESULT_INCORRECT_SKILL_DEMONSTRATED";
-        if (raw === "BLOCKED_BY_SAFETY_POLICY") return "BLOCKED_BY_SAFETY_POLICY";
-        return "INCOMPLETE";
-      })(),
+      status: request.verification.status as any,
       score: request.verification.score,
       objectives: request.verification.objectives.map((o) => ({
         label: o.label,
@@ -411,16 +401,8 @@ export function deterministicHintFallback(request: HintRequest): HintResponse {
     baseHint: request.baseHint,
     observation: request.observation
       ? {
-          category:
-            request.observation.category &&
-            (OBSERVATION_CATEGORIES as readonly string[]).includes(request.observation.category)
-              ? (request.observation.category as ObservationCategory)
-              : null,
-          conceptUnderstanding:
-            request.observation.conceptUnderstanding === "solid" ||
-            request.observation.conceptUnderstanding === "partial"
-              ? request.observation.conceptUnderstanding
-              : "unclear",
+          category: request.observation.category as any,
+          conceptUnderstanding: request.observation.conceptUnderstanding as any,
           skillDemonstrated: request.observation.skillDemonstrated,
         }
       : null,

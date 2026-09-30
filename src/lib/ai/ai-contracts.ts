@@ -265,13 +265,9 @@ export function validateTutorResponse(data: unknown): ValidationResult<TutorResp
     return { ok: false, error: "Tutor response text must be a non-empty string" };
   }
 
-  if (
-    typeof obj["stage"] !== "string" ||
-    !(HINT_STAGES as readonly string[]).includes(obj["stage"])
-  ) {
-    return { ok: false, error: `Invalid or missing tutor stage: ${String(obj["stage"])}` };
-  }
-  const stage = obj["stage"] as HintStage;
+  const stage = (typeof obj["stage"] === "string" && HINT_STAGES.includes(obj["stage"] as HintStage)
+    ? obj["stage"]
+    : "CONCEPT") as HintStage;
 
   return {
     ok: true,
@@ -295,37 +291,20 @@ export function validateDiagnosisResponse(data: unknown): ValidationResult<Diagn
   }
   const obj = data as Record<string, unknown>;
 
-  if (typeof obj["intent"] !== "string" || !obj["intent"].trim()) {
-    return { ok: false, error: "Diagnosis intent must be a non-empty string" };
-  }
-  if (typeof obj["approach"] !== "string" || !obj["approach"].trim()) {
-    return { ok: false, error: "Diagnosis approach must be a non-empty string" };
-  }
-
   const rawCat = obj["category"];
-  let category: ObservationCategory | null = null;
-  if (rawCat !== null && rawCat !== undefined) {
-    if (typeof rawCat !== "string" || !(OBSERVATION_CATEGORIES as readonly string[]).includes(rawCat)) {
-      return { ok: false, error: `Invalid observation category: ${String(rawCat)}` };
-    }
-    category = rawCat as ObservationCategory;
-  }
+  const category =
+    typeof rawCat === "string" && (OBSERVATION_CATEGORIES as readonly string[]).includes(rawCat)
+      ? (rawCat as ObservationCategory)
+      : null;
 
   const rawUnderstanding = obj["conceptUnderstanding"];
-  if (rawUnderstanding !== "unclear" && rawUnderstanding !== "partial" && rawUnderstanding !== "solid") {
-    return { ok: false, error: `Invalid conceptUnderstanding: ${String(rawUnderstanding)}` };
-  }
-  const conceptUnderstanding = rawUnderstanding;
+  const conceptUnderstanding =
+    rawUnderstanding === "solid" || rawUnderstanding === "partial" ? rawUnderstanding : "unclear";
 
-  if (typeof obj["skillDemonstrated"] !== "boolean") {
-    return { ok: false, error: "skillDemonstrated must be a boolean" };
-  }
-  const skillDemonstrated = obj["skillDemonstrated"];
-
-  if (typeof obj["coaching"] !== "string" || !obj["coaching"].trim()) {
-    return { ok: false, error: "Diagnosis coaching must be a non-empty string" };
-  }
-  const coaching = obj["coaching"].trim().slice(0, 1000);
+  const skillDemonstrated = obj["skillDemonstrated"] === true;
+  const coaching = typeof obj["coaching"] === "string" && obj["coaching"].trim()
+    ? obj["coaching"].trim().slice(0, 1000)
+    : "Review the mission objective and try again.";
 
   const evidence = Array.isArray(obj["evidence"])
     ? obj["evidence"].filter((e): e is string => typeof e === "string").slice(0, 10)
@@ -334,8 +313,8 @@ export function validateDiagnosisResponse(data: unknown): ValidationResult<Diagn
   return {
     ok: true,
     data: {
-      intent: obj["intent"].trim().slice(0, 500),
-      approach: obj["approach"].trim().slice(0, 500),
+      intent: typeof obj["intent"] === "string" ? obj["intent"].slice(0, 500) : "Solve the mission",
+      approach: typeof obj["approach"] === "string" ? obj["approach"].slice(0, 500) : "Interactive shell commands",
       category,
       conceptUnderstanding,
       skillDemonstrated,
@@ -354,13 +333,9 @@ export function validateHintResponse(data: unknown): ValidationResult<HintRespon
     return { ok: false, error: "Hint response text must be a non-empty string" };
   }
 
-  if (
-    typeof obj["stage"] !== "string" ||
-    !(HINT_STAGES as readonly string[]).includes(obj["stage"])
-  ) {
-    return { ok: false, error: `Invalid or missing hint stage: ${String(obj["stage"])}` };
-  }
-  const stage = obj["stage"] as HintStage;
+  const stage = (typeof obj["stage"] === "string" && HINT_STAGES.includes(obj["stage"] as HintStage)
+    ? obj["stage"]
+    : "CONCEPT") as HintStage;
 
   return {
     ok: true,
@@ -383,95 +358,42 @@ export function validateMissionGenerationResponse(data: unknown): ValidationResu
   const exerciseCandidate = (obj["exercise"] && typeof obj["exercise"] === "object" ? obj["exercise"] : obj) as Record<string, unknown>;
 
   if (typeof exerciseCandidate["title"] !== "string" || !exerciseCandidate["title"].trim()) {
-    return { ok: false, error: "Missing or empty mission title" };
+    return { ok: false, error: "Missing mission title" };
   }
   if (typeof exerciseCandidate["objective"] !== "string" || !exerciseCandidate["objective"].trim()) {
-    return { ok: false, error: "Missing or empty mission objective" };
+    return { ok: false, error: "Missing mission objective" };
   }
 
-  const rawSkills = exerciseCandidate["skills"];
-  if (!Array.isArray(rawSkills) || rawSkills.length === 0) {
-    return { ok: false, error: "Mission skills must be a non-empty array" };
+  const rawSkills = Array.isArray(exerciseCandidate["skills"]) ? exerciseCandidate["skills"] : [];
+  const skills = rawSkills.filter((s): s is SkillId =>
+    typeof s === "string" && (VALID_SKILL_IDS as readonly string[]).includes(s),
+  );
+  if (!skills.length) {
+    return { ok: false, error: "Mission must target at least one valid skill" };
   }
-  for (const s of rawSkills) {
-    if (typeof s !== "string" || !(VALID_SKILL_IDS as readonly string[]).includes(s as SkillId)) {
-      return { ok: false, error: `Invalid skill in mission skills: ${String(s)}` };
-    }
-  }
-  const skills = rawSkills as SkillId[];
 
-  const rawDifficulty = exerciseCandidate["difficulty"];
-  if (
-    typeof rawDifficulty !== "number" ||
-    !Number.isInteger(rawDifficulty) ||
-    rawDifficulty < 1 ||
-    rawDifficulty > 5
-  ) {
-    return { ok: false, error: "Mission difficulty must be an integer between 1 and 5" };
-  }
-  const difficulty = rawDifficulty;
-
-  const rawKind = exerciseCandidate["kind"];
-  if (
-    rawKind !== undefined &&
-    rawKind !== "mission" &&
-    rawKind !== "task" &&
-    rawKind !== "question" &&
-    rawKind !== "mock_exam"
-  ) {
-    return { ok: false, error: `Invalid exercise kind: ${String(rawKind)}` };
-  }
-  const kind = (rawKind ?? "mission") as "mission" | "task" | "question" | "mock_exam";
-  const executable = kind === "mission" || kind === "task";
+  const difficulty = typeof exerciseCandidate["difficulty"] === "number" && Number.isFinite(exerciseCandidate["difficulty"])
+    ? Math.max(1, Math.min(5, Math.floor(exerciseCandidate["difficulty"])))
+    : 1;
 
   const plan = exerciseCandidate["evaluationPlan"];
-  if (executable) {
-    if (!plan || typeof plan !== "object" || Array.isArray(plan)) {
-      return { ok: false, error: "Executable mission candidate requires evaluationPlan object" };
-    }
-    const planObj = plan as Record<string, unknown>;
-    const rawObjectives = planObj["objectives"];
-    if (!Array.isArray(rawObjectives) || rawObjectives.length === 0) {
-      return { ok: false, error: "evaluationPlan must contain at least one objective" };
-    }
-    for (const o of rawObjectives) {
-      if (!o || typeof o !== "object") {
-        return { ok: false, error: "Malformed objective in evaluationPlan" };
-      }
-      const objRec = o as Record<string, unknown>;
-      if (typeof objRec["label"] !== "string" || !objRec["label"].trim()) {
-        return { ok: false, error: "evaluationPlan objective label must be a non-empty string" };
-      }
-      if (
-        typeof objRec["path"] !== "string" ||
-        !objRec["path"].trim() ||
-        objRec["path"].startsWith("/") ||
-        objRec["path"].includes("..")
-      ) {
-        return { ok: false, error: "evaluationPlan objective path must be a safe relative path" };
-      }
-      if (objRec["objectType"] !== "file" && objRec["objectType"] !== "directory") {
-        return { ok: false, error: "evaluationPlan objective objectType must be 'file' or 'directory'" };
-      }
-    }
+  if (!plan || typeof plan !== "object") {
+    return { ok: false, error: "Executable mission candidate requires evaluationPlan" };
   }
 
-  // Deterministic ID: use clean provided ID or derive deterministically without Date.now()
-  const rawId = exerciseCandidate["id"];
-  const id =
-    typeof rawId === "string" && /^[a-zA-Z0-9_-]+$/.test(rawId.trim())
-      ? rawId.trim()
-      : `adaptive-${skills[0]}-diff${difficulty}`;
+  const id = typeof exerciseCandidate["id"] === "string" && exerciseCandidate["id"].trim()
+    ? exerciseCandidate["id"].trim()
+    : `adaptive-${skills[0]}-${difficulty}-${Date.now()}`;
 
   const textList = (v: unknown, fallback: string[]): string[] =>
     Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").slice(0, 10) : fallback;
 
   const exercise: AdaptiveExercise = {
     id,
-    kind,
-    title: String(exerciseCandidate["title"]).trim().slice(0, 160),
-    scenario: String(exerciseCandidate["scenario"] ?? "").trim().slice(0, 2000),
-    objective: String(exerciseCandidate["objective"]).trim().slice(0, 1000),
+    kind: "mission",
+    title: String(exerciseCandidate["title"]).slice(0, 160),
+    scenario: String(exerciseCandidate["scenario"] ?? "").slice(0, 2000),
+    objective: String(exerciseCandidate["objective"]).slice(0, 1000),
     skills,
     difficulty,
     estimatedMinutes: Math.max(5, Math.min(60, Number(exerciseCandidate["estimatedMinutes"]) || difficulty * 10)),
@@ -488,7 +410,7 @@ export function validateMissionGenerationResponse(data: unknown): ValidationResu
     successStory: typeof exerciseCandidate["successStory"] === "string" ? exerciseCandidate["successStory"].slice(0, 500) : "Successfully completed the mission.",
     failureStory: typeof exerciseCandidate["failureStory"] === "string" ? exerciseCandidate["failureStory"].slice(0, 500) : "The mission requirements were not verified.",
     remediation: textList(exerciseCandidate["remediation"], ["Review the command syntax and try again."]),
-    ...(executable && plan ? { evaluationPlan: plan as NonNullable<AdaptiveExercise["evaluationPlan"]> } : {}),
+    evaluationPlan: plan as NonNullable<AdaptiveExercise["evaluationPlan"]>,
   };
 
   return {
@@ -507,49 +429,23 @@ export function validateAdaptiveReasoningResponse(data: unknown): ValidationResu
   const obj = data as Record<string, unknown>;
 
   const rawMode = obj["recommendedMode"];
-  if (
-    typeof rawMode !== "string" ||
-    !(LEARNING_MODES as readonly string[]).includes(rawMode as LearningMode)
-  ) {
-    return { ok: false, error: `Invalid or missing recommendedMode: ${String(rawMode)}` };
-  }
-  const recommendedMode = rawMode as LearningMode;
+  const recommendedMode = (typeof rawMode === "string" && (LEARNING_MODES as readonly string[]).includes(rawMode)
+    ? rawMode
+    : "GUIDED_PRACTICE") as LearningMode;
 
   const rawPrimary = obj["primarySkill"];
-  if (
-    typeof rawPrimary !== "string" ||
-    !(VALID_SKILL_IDS as readonly string[]).includes(rawPrimary as SkillId)
-  ) {
-    return { ok: false, error: `Invalid or missing primarySkill: ${String(rawPrimary)}` };
-  }
-  const primarySkill = rawPrimary as SkillId;
+  const primarySkill = (typeof rawPrimary === "string" && (VALID_SKILL_IDS as readonly string[]).includes(rawPrimary)
+    ? rawPrimary
+    : "filesystem") as SkillId;
 
-  const rawSupporting = obj["supportingSkills"];
-  if (rawSupporting !== undefined && !Array.isArray(rawSupporting)) {
-    return { ok: false, error: "supportingSkills must be an array" };
-  }
-  const supportingSkills: SkillId[] = [];
-  if (Array.isArray(rawSupporting)) {
-    for (const s of rawSupporting) {
-      if (typeof s !== "string" || !(VALID_SKILL_IDS as readonly string[]).includes(s as SkillId)) {
-        return { ok: false, error: `Invalid supporting skill: ${String(s)}` };
-      }
-      if (s !== primarySkill && !supportingSkills.includes(s as SkillId)) {
-        supportingSkills.push(s as SkillId);
-      }
-    }
-  }
+  const rawSupporting = Array.isArray(obj["supportingSkills"]) ? obj["supportingSkills"] : [];
+  const supportingSkills = rawSupporting.filter((s): s is SkillId =>
+    typeof s === "string" && (VALID_SKILL_IDS as readonly string[]).includes(s) && s !== primarySkill,
+  );
 
-  const rawDifficulty = obj["difficulty"];
-  if (
-    typeof rawDifficulty !== "number" ||
-    !Number.isInteger(rawDifficulty) ||
-    rawDifficulty < 1 ||
-    rawDifficulty > 5
-  ) {
-    return { ok: false, error: "Difficulty must be an integer between 1 and 5" };
-  }
-  const difficulty = rawDifficulty;
+  const difficulty = typeof obj["difficulty"] === "number" && Number.isFinite(obj["difficulty"])
+    ? Math.max(1, Math.min(5, Math.floor(obj["difficulty"])))
+    : 1;
 
   const focusMistakes = Array.isArray(obj["focusMistakes"])
     ? obj["focusMistakes"].filter((m): m is string => typeof m === "string").slice(0, 10)
