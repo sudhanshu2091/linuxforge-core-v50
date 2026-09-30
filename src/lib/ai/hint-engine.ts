@@ -1,5 +1,7 @@
 import type { ObservationCategory, Observation, SkillMemoryView } from "@/lib/forge/types";
 import { decideTeachingStrategy } from "./teaching-engine";
+import { aiHintService } from "./ai-service.server";
+import type { HintRequest } from "./ai-contracts";
 
 export type HintSituation = {
   level: number;
@@ -113,3 +115,40 @@ export function buildGuidedHint(input: HintSituation): GuidedHint {
     sourceRefs: knowledge?.sourceRefs ?? [],
   };
 }
+
+export async function getAiGuidedHint(input: HintSituation): Promise<GuidedHint> {
+  const deterministic = buildGuidedHint(input);
+  try {
+    const hintReq: HintRequest = {
+      objective: input.objective ?? input.baseHint,
+      requiredSkills: input.skills?.map((s) => s.skillId) ?? [],
+      level: deterministic.level,
+      totalLevels: input.totalLevels,
+      stage: deterministic.stage,
+      baseHint: input.baseHint,
+      observation: input.observation
+        ? {
+            category: input.observation.category,
+            conceptUnderstanding: input.observation.conceptUnderstanding,
+            skillDemonstrated: input.observation.skillDemonstrated,
+          }
+        : null,
+      failedCommands: input.failedCommands,
+      learnerLevel: input.learnerLevel,
+    };
+    const { response, fallbackUsed } = await aiHintService(hintReq);
+    if (!fallbackUsed) {
+      return {
+        ...deterministic,
+        text: response.text,
+        stage: response.stage,
+        teachingNote: response.teachingNote || deterministic.teachingNote,
+        conceptGap: response.conceptGap ?? deterministic.conceptGap,
+      };
+    }
+  } catch {
+    // Non-fatal, gracefully fall back to deterministic hint
+  }
+  return deterministic;
+}
+

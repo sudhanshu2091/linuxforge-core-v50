@@ -44,6 +44,10 @@ export type GeneratedDefinition = {
   failureStory: string;
   remediation: string[];
   evaluationPlan: GeneratedEvaluationPlan;
+  prerequisites?: string[] | undefined;
+  previousReferences?: string[] | undefined;
+  trainingDecision?: Record<string, unknown> | undefined;
+  blueprint?: Record<string, unknown> | undefined;
 };
 
 const normalizePath = (raw: string): string | null => {
@@ -150,8 +154,16 @@ export function generatedDefinitionToContract(
     allowedApproaches: definition.allowedApproaches,
     bannedShortcuts: definition.bannedShortcuts,
     difficulty: definition.difficulty,
-    prerequisites: options?.prerequisites ? [...options.prerequisites] : [],
-    previousReferences: options?.previousReferences ? [...options.previousReferences] : [],
+    prerequisites: options?.prerequisites
+      ? [...options.prerequisites]
+      : Array.isArray(definition.prerequisites)
+        ? [...definition.prerequisites]
+        : [],
+    previousReferences: options?.previousReferences
+      ? [...options.previousReferences]
+      : Array.isArray(definition.previousReferences)
+        ? [...definition.previousReferences]
+        : [],
     contextRequirements: [
       "learner_level",
       "current_lab_state",
@@ -221,8 +233,10 @@ export function generatedToBrief(definition: GeneratedDefinition): ChallengeBrie
     allowedApproaches: definition.allowedApproaches,
     bannedShortcuts: definition.bannedShortcuts,
     difficulty: definition.difficulty,
-    prerequisites: [],
-    previousReferences: [],
+    prerequisites: Array.isArray(definition.prerequisites) ? [...definition.prerequisites] : [],
+    previousReferences: Array.isArray(definition.previousReferences)
+      ? [...definition.previousReferences]
+      : [],
     xpReward: Math.max(50, Math.min(500, 80 + definition.difficulty * 40)),
     hintLevels: definition.hints.length,
   };

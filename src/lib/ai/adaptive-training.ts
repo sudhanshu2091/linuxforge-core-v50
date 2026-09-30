@@ -158,13 +158,42 @@ export function selectAdaptiveTraining(input: {
     reason = masteryDecision.rationale;
     evidence.push(...masteryDecision.gateReasons);
     constraints.push("Keep the task inside the approved isolated lab workflow.");
-  } else if (assessment?.learningSignal === "blocked" || topMistake === "UNSAFE_APPROACH") {
+  } else if (
+    assessment?.learningSignal === "blocked" ||
+    topMistake === "UNSAFE_APPROACH" ||
+    input.intelligence.repeatedMistakes.includes("UNSAFE_APPROACH")
+  ) {
     mode = "REMEDIATION";
     sourceStrategy = "targeted-patterns";
     difficulty = current;
     reason = "Safety evidence requires a controlled remediation cycle before increasing challenge.";
     evidence.push("safety boundary or unsafe approach detected");
     constraints.push("Keep the task inside the approved isolated lab workflow.");
+    constraints.push("Enforce strict parameter and path boundaries.");
+  } else if (
+    topMistake === "SKILL_BYPASS" ||
+    input.intelligence.repeatedMistakes.includes("SKILL_BYPASS")
+  ) {
+    mode = "GUIDED_PRACTICE";
+    sourceStrategy = "targeted-patterns";
+    difficulty = current;
+    reason =
+      "Target skill was bypassed or unobserved; a guided practice cycle is required to verify the specific technique.";
+    evidence.push("skill bypass detected; method evidence required");
+    constraints.push("Require explicit method evidence rather than verifying only output state.");
+  } else if (
+    topMistake === "TYPO" &&
+    mistakes.every((m) => m === "TYPO") &&
+    assessment &&
+    assessment.grade >= 70
+  ) {
+    mode = "GUIDED_PRACTICE";
+    sourceStrategy = "targeted-patterns";
+    difficulty = current;
+    reason =
+      "Command failure was driven by typing errors rather than conceptual misunderstanding; repeat with low penalty.";
+    evidence.push("isolated typo detected");
+    constraints.push("Provide exact syntax patterns and focus on accurate typing.");
   } else if (
     assessment?.learningSignal === "needs_practice" ||
     (assessment && assessment.grade < 70) ||
@@ -214,7 +243,9 @@ export function selectAdaptiveTraining(input: {
   } else if (
     assessment?.learningSignal === "mastered" &&
     assessment.grade >= 85 &&
-    input.intelligence.independence >= 70
+    input.intelligence.independence >= 70 &&
+    input.intelligence.hintDependency < 35 &&
+    !input.intelligence.signals.includes("DEPENDENT")
   ) {
     mode = "PROGRESSION";
     sourceStrategy = "progression-patterns";
@@ -228,7 +259,8 @@ export function selectAdaptiveTraining(input: {
   } else if (
     input.intelligence.readiness >= 78 &&
     input.intelligence.independence >= 70 &&
-    input.intelligence.hintDependency < 35
+    input.intelligence.hintDependency < 35 &&
+    !input.intelligence.signals.includes("DEPENDENT")
   ) {
     mode = "PROGRESSION";
     sourceStrategy = "progression-patterns";
@@ -269,10 +301,12 @@ export function selectAdaptiveTraining(input: {
     evidence.push("limited recent evidence");
   }
 
-  if (input.intelligence.hintDependency >= 70)
+  if (input.intelligence.hintDependency >= 50 || input.intelligence.signals.includes("DEPENDENT")) {
+    difficulty = Math.min(difficulty, current);
     constraints.push(
       "Do not increase difficulty until the learner demonstrates more independent execution.",
     );
+  }
   if (input.intelligence.signals.includes("CONCEPT_GAP"))
     constraints.push("Test the underlying concept, not just command recall.");
   if (mode === "SPACED_REVIEW")

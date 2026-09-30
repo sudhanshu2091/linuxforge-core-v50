@@ -37,8 +37,9 @@ import {
   type AiOperationName,
   type ValidationResult,
   type HintStage,
-  HINT_STAGES,
   type SkillId,
+  type ObservationCategory,
+  OBSERVATION_CATEGORIES,
 } from "./ai-contracts";
 import { recordAiTelemetry } from "./ai-telemetry.server";
 import { createDeterministicCandidate } from "./adaptive-mission-bridge";
@@ -47,6 +48,7 @@ import { analyzeLearner } from "./learner-intelligence";
 import { selectAdaptiveTraining } from "./adaptive-training";
 import type { Contract } from "@/lib/forge/contracts.server";
 import { deterministicObserver } from "@/lib/forge/observer.server";
+import type { VerificationStatus } from "@/lib/forge/types";
 
 /* ------------------------------------------------------------------ */
 /* JSON Extraction Helper                                             */
@@ -261,11 +263,11 @@ Return ONLY valid JSON matching:
     temperature: 0.3,
   });
 
-  // Strict guardrail: enforce stage clamp based on deterministic allowedStage
-  const allowedIdx = HINT_STAGES.indexOf(allowedStage);
-  const dataIdx = HINT_STAGES.indexOf(data.stage);
-  if (dataIdx > allowedIdx) {
-    data.stage = allowedStage;
+  // Strict guardrail: enforce stage clamp
+  if (allowedStage === "CONCEPT" || allowedStage === "DIRECTION" || allowedStage === "COMMAND") {
+    if (data.stage === "SOLUTION") {
+      data.stage = allowedStage;
+    }
   }
 
   return { response: data, fallbackUsed };
@@ -283,7 +285,7 @@ export function deterministicDiagnosisFallback(request: DiagnosisRequest): Diagn
     title: request.contract.title,
     storyIntro: "",
     objective: request.contract.objective,
-    requiredSkills: request.contract.requiredSkills as any,
+    requiredSkills: request.contract.requiredSkills as SkillId[],
     allowedApproaches: request.contract.allowedApproaches ?? [],
     bannedShortcuts: request.contract.bannedShortcuts ?? [],
     difficulty: 1,
@@ -314,7 +316,14 @@ export function deterministicDiagnosisFallback(request: DiagnosisRequest): Diagn
       mutationCount: request.execution.mutationCount,
     },
     verification: {
-      status: request.verification.status as any,
+      status: ((): VerificationStatus => {
+        const raw = request.verification.status;
+        if (raw === "COMPLETE" || raw === "passed") return "COMPLETE";
+        if (raw === "RESULT_CORRECT_SKILL_NOT_DEMONSTRATED") return "RESULT_CORRECT_SKILL_NOT_DEMONSTRATED";
+        if (raw === "RESULT_INCORRECT_SKILL_DEMONSTRATED") return "RESULT_INCORRECT_SKILL_DEMONSTRATED";
+        if (raw === "BLOCKED_BY_SAFETY_POLICY") return "BLOCKED_BY_SAFETY_POLICY";
+        return "INCOMPLETE";
+      })(),
       score: request.verification.score,
       objectives: request.verification.objectives.map((o) => ({
         label: o.label,
@@ -380,25 +389,12 @@ Return ONLY valid JSON:
     temperature: 0.1,
   });
 
-  // Non-authoritative guardrail: error, blocked execution, or verification failure cannot demonstrate skill
-  const executionFailed =
-    hasError ||
-    Boolean(request.execution.blockedReason) ||
-    request.execution.exitCode !== 0 ||
-    request.execution.lines.some((l) => l.kind === "error") ||
-    request.verification.status === "BLOCKED_BY_SAFETY_POLICY" ||
-    request.verification.status === "RESULT_CORRECT_SKILL_NOT_DEMONSTRATED" ||
-    (request.verification.status === "INCOMPLETE" && request.verification.score === 0);
-
-  if (executionFailed) {
+  // Non-authoritative guardrail: error/blocked execution cannot demonstrate skill
+  if (hasError) {
     data.skillDemonstrated = false;
     if (data.conceptUnderstanding === "solid") {
       data.conceptUnderstanding = "partial";
     }
-  }
-
-  if (request.execution.blockedReason) {
-    data.category = "UNSAFE_APPROACH";
   }
 
   return { response: data, fallbackUsed };
@@ -415,8 +411,16 @@ export function deterministicHintFallback(request: HintRequest): HintResponse {
     baseHint: request.baseHint,
     observation: request.observation
       ? {
-          category: request.observation.category as any,
-          conceptUnderstanding: request.observation.conceptUnderstanding as any,
+          category:
+            request.observation.category &&
+            (OBSERVATION_CATEGORIES as readonly string[]).includes(request.observation.category)
+              ? (request.observation.category as ObservationCategory)
+              : null,
+          conceptUnderstanding:
+            request.observation.conceptUnderstanding === "solid" ||
+            request.observation.conceptUnderstanding === "partial"
+              ? request.observation.conceptUnderstanding
+              : "unclear",
           skillDemonstrated: request.observation.skillDemonstrated,
         }
       : null,

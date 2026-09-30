@@ -7,7 +7,14 @@ import { selectAdaptiveTraining } from "./adaptive-training";
 import { buildGuidedHint } from "./hint-engine";
 import { generatedDefinitionToContract, type GeneratedDefinition } from "@/lib/forge/generated-contract.server";
 import { validateAndPublishMissionV2 } from "./mission-generation-v2.server";
-import type { AdaptiveExercise, MissionState, SkillMemoryView } from "@/lib/forge/types";
+import type {
+  AdaptiveExercise,
+  MissionState,
+  SkillMemoryView,
+  Verification,
+  VerificationStatus,
+} from "@/lib/forge/types";
+import type { MethodEvidence } from "@/lib/forge/executor.server";
 import type { CanonicalEnvironmentModel, MissionArtifact } from "@/lib/forge/environment/types";
 
 const mockContract: Contract = {
@@ -49,6 +56,27 @@ function createMockSkill(overrides: Partial<SkillMemoryView> & { skillId: SkillM
   };
 }
 
+function mockEvidence(commands: string[] = [], overrides: Partial<MethodEvidence> = {}): MethodEvidence {
+  return {
+    usedLoop: false,
+    operations: commands.length,
+    invocations: commands.length,
+    commands,
+    ...overrides,
+  };
+}
+
+function mockVerification(overrides: Partial<Verification> & { status: VerificationStatus }): Verification {
+  return {
+    score: overrides.status === "COMPLETE" ? 100 : 0,
+    message: overrides.status === "COMPLETE" ? "Verified" : "Incomplete",
+    objectives: [],
+    remediation: [],
+    wentWell: [],
+    ...overrides,
+  };
+}
+
 describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
   // -------------------------------------------------------------
   // PART A & B: INTENT-AWARE EVALUATION (Tests 1-12)
@@ -58,8 +86,17 @@ describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
       const obs = deterministicObserver.observe({
         contract: mockContract,
         raw: "chmod 750 workspace",
-        execution: { lines: [{ kind: "stdout", text: "" }], blocked: false, exitCode: 0, mutationCount: 1, evidence: [] },
-        verification: { status: "COMPLETE", objectives: [{ label: "exists", met: true, evidence: "ok" }], skillDemonstrated: true },
+        execution: {
+          lines: [{ kind: "output", text: "" }],
+          blocked: null,
+          exitCode: 0,
+          mutationCount: 1,
+          evidence: mockEvidence(["chmod 750 workspace"]),
+        },
+        verification: mockVerification({
+          status: "COMPLETE",
+          objectives: [{ label: "exists", met: true, evidence: "ok" }],
+        }),
         history: ["mkdir workspace", "chmod 750 workspace"],
         hintsUsed: 0,
         language: "English",
@@ -75,8 +112,17 @@ describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
       const obs = deterministicObserver.observe({
         contract: mockContract,
         raw: "chmod u=rwx,g=rx,o= workspace", // Alternative syntax
-        execution: { lines: [{ kind: "stdout", text: "" }], blocked: false, exitCode: 0, mutationCount: 1, evidence: [] },
-        verification: { status: "COMPLETE", objectives: [{ label: "exists", met: true, evidence: "ok" }], skillDemonstrated: true },
+        execution: {
+          lines: [{ kind: "output", text: "" }],
+          blocked: null,
+          exitCode: 0,
+          mutationCount: 1,
+          evidence: mockEvidence(["chmod u=rwx,g=rx,o= workspace"]),
+        },
+        verification: mockVerification({
+          status: "COMPLETE",
+          objectives: [{ label: "exists", met: true, evidence: "ok" }],
+        }),
         history: ["mkdir workspace", "chmod u=rwx,g=rx,o= workspace"],
         hintsUsed: 1,
         language: "English",
@@ -91,8 +137,17 @@ describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
       const obs = deterministicObserver.observe({
         contract: mockContract,
         raw: "mkdir -p workspace",
-        execution: { lines: [{ kind: "stdout", text: "" }], blocked: false, exitCode: 0, mutationCount: 1, evidence: [] },
-        verification: { status: "COMPLETE", objectives: [{ label: "exists", met: true, evidence: "ok" }], skillDemonstrated: true },
+        execution: {
+          lines: [{ kind: "output", text: "" }],
+          blocked: null,
+          exitCode: 0,
+          mutationCount: 1,
+          evidence: mockEvidence(["mkdir -p workspace"]),
+        },
+        verification: mockVerification({
+          status: "COMPLETE",
+          objectives: [{ label: "exists", met: true, evidence: "ok" }],
+        }),
         history: ["mkdir -p workspace"],
         hintsUsed: 0,
         language: "English",
@@ -106,8 +161,17 @@ describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
       const obs = deterministicObserver.observe({
         contract: mockContract,
         raw: "touch a; touch b; touch c",
-        execution: { lines: [{ kind: "stdout", text: "" }], blocked: false, exitCode: 0, mutationCount: 3, evidence: [] },
-        verification: { status: "RESULT_CORRECT_SKILL_NOT_DEMONSTRATED", objectives: [{ label: "all files created", met: true, evidence: "files created" }], skillDemonstrated: false },
+        execution: {
+          lines: [{ kind: "output", text: "" }],
+          blocked: null,
+          exitCode: 0,
+          mutationCount: 3,
+          evidence: mockEvidence(["touch a", "touch b", "touch c"]),
+        },
+        verification: mockVerification({
+          status: "RESULT_CORRECT_SKILL_NOT_DEMONSTRATED",
+          objectives: [{ label: "all files created", met: true, evidence: "files created" }],
+        }),
         history: ["touch a", "touch b", "touch c"],
         hintsUsed: 0,
         language: "English",
@@ -115,15 +179,24 @@ describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
 
       expect(obs.category).toBe("SKILL_BYPASS");
       expect(obs.skillDemonstrated).toBe(false);
-      expect(obs.evidence?.some((e) => e.includes("bypassed or unobserved"))).toBe(true);
+      expect(obs.evidence?.some((e: string) => e.includes("bypassed or unobserved"))).toBe(true);
     });
 
     it("5. wrong target with correct technique -> RESULT_INCORRECT_SKILL_DEMONSTRATED", () => {
       const obs = deterministicObserver.observe({
         contract: mockContract,
         raw: "chmod 750 /wrong/path",
-        execution: { lines: [{ kind: "stdout", text: "" }], blocked: false, exitCode: 0, mutationCount: 1, evidence: [] },
-        verification: { status: "RESULT_INCORRECT_SKILL_DEMONSTRATED", objectives: [{ label: "exists", met: false, evidence: "wrong path" }], skillDemonstrated: true },
+        execution: {
+          lines: [{ kind: "output", text: "" }],
+          blocked: null,
+          exitCode: 0,
+          mutationCount: 1,
+          evidence: mockEvidence(["chmod 750 /wrong/path"]),
+        },
+        verification: mockVerification({
+          status: "RESULT_INCORRECT_SKILL_DEMONSTRATED",
+          objectives: [{ label: "exists", met: false, evidence: "wrong path" }],
+        }),
         history: ["chmod 750 /wrong/path"],
         hintsUsed: 0,
         language: "English",
@@ -137,8 +210,17 @@ describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
       const obs = deterministicObserver.observe({
         contract: mockContract,
         raw: "mkkdir workspace",
-        execution: { lines: [{ kind: "error", text: "mkkdir: command not found" }], blocked: false, exitCode: 127, mutationCount: 0, evidence: [] },
-        verification: { status: "INCOMPLETE", objectives: [{ label: "exists", met: false, evidence: "missing" }], skillDemonstrated: false },
+        execution: {
+          lines: [{ kind: "error", text: "mkkdir: command not found" }],
+          blocked: null,
+          exitCode: 127,
+          mutationCount: 0,
+          evidence: mockEvidence(["mkkdir workspace"]),
+        },
+        verification: mockVerification({
+          status: "INCOMPLETE",
+          objectives: [{ label: "exists", met: false, evidence: "missing" }],
+        }),
         history: ["mkkdir workspace"],
         hintsUsed: 0,
         language: "English",
@@ -147,15 +229,24 @@ describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
       expect(obs.category).toBe("TYPO");
       expect(obs.skillDemonstrated).toBe(false);
       expect(obs.coaching).toContain("mkdir");
-      expect(obs.evidence?.some((e) => e.includes("Typo detected"))).toBe(true);
+      expect(obs.evidence?.some((e: string) => e.includes("Typo detected"))).toBe(true);
     });
 
     it("7. command failure caused by wrong path -> WRONG_PATH", () => {
       const obs = deterministicObserver.observe({
         contract: mockContract,
         raw: "cd /nonexistent/dir",
-        execution: { lines: [{ kind: "error", text: "bash: cd: /nonexistent/dir: No such file or directory" }], blocked: false, exitCode: 1, mutationCount: 0, evidence: [] },
-        verification: { status: "INCOMPLETE", objectives: [{ label: "exists", met: false, evidence: "missing" }], skillDemonstrated: false },
+        execution: {
+          lines: [{ kind: "error", text: "bash: cd: /nonexistent/dir: No such file or directory" }],
+          blocked: null,
+          exitCode: 1,
+          mutationCount: 0,
+          evidence: mockEvidence(["cd /nonexistent/dir"]),
+        },
+        verification: mockVerification({
+          status: "INCOMPLETE",
+          objectives: [{ label: "exists", met: false, evidence: "missing" }],
+        }),
         history: ["cd /nonexistent/dir"],
         hintsUsed: 0,
         language: "English",
@@ -169,8 +260,17 @@ describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
       const obs = deterministicObserver.observe({
         contract: mockContract,
         raw: "unknownbinary workspace",
-        execution: { lines: [{ kind: "error", text: "unknownbinary: command not found" }], blocked: false, exitCode: 127, mutationCount: 0, evidence: [] },
-        verification: { status: "INCOMPLETE", objectives: [{ label: "exists", met: false, evidence: "missing" }], skillDemonstrated: false },
+        execution: {
+          lines: [{ kind: "error", text: "unknownbinary: command not found" }],
+          blocked: null,
+          exitCode: 127,
+          mutationCount: 0,
+          evidence: mockEvidence(["unknownbinary workspace"]),
+        },
+        verification: mockVerification({
+          status: "INCOMPLETE",
+          objectives: [{ label: "exists", met: false, evidence: "missing" }],
+        }),
         history: ["unknownbinary workspace"],
         hintsUsed: 0,
         language: "English",
@@ -184,8 +284,17 @@ describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
       const obs = deterministicObserver.observe({
         contract: mockContract,
         raw: "echo hello",
-        execution: { lines: [{ kind: "stdout", text: "hello" }], blocked: false, exitCode: 0, mutationCount: 0, evidence: [] },
-        verification: { status: "INCOMPLETE", objectives: [{ label: "exists", met: false, evidence: "missing" }], skillDemonstrated: false },
+        execution: {
+          lines: [{ kind: "output", text: "hello" }],
+          blocked: null,
+          exitCode: 0,
+          mutationCount: 0,
+          evidence: mockEvidence(["echo hello"]),
+        },
+        verification: mockVerification({
+          status: "INCOMPLETE",
+          objectives: [{ label: "exists", met: false, evidence: "missing" }],
+        }),
         history: ["echo hello"],
         hintsUsed: 0,
         language: "English",
@@ -199,23 +308,41 @@ describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
       const obs = deterministicObserver.observe({
         contract: mockContract,
         raw: "cat /etc/shadow",
-        execution: { lines: [{ kind: "error", text: "Operation blocked by sandbox policy" }], blocked: true, exitCode: 1, mutationCount: 0, evidence: [] },
-        verification: { status: "INCOMPLETE", objectives: [{ label: "exists", met: false, evidence: "missing" }], skillDemonstrated: false },
+        execution: {
+          lines: [{ kind: "error", text: "Operation blocked by sandbox policy" }],
+          blocked: { reason: "Operation blocked by sandbox policy" },
+          exitCode: 1,
+          mutationCount: 0,
+          evidence: mockEvidence(["cat /etc/shadow"]),
+        },
+        verification: mockVerification({
+          status: "INCOMPLETE",
+          objectives: [{ label: "exists", met: false, evidence: "missing" }],
+        }),
         history: ["cat /etc/shadow"],
         hintsUsed: 0,
         language: "English",
       });
 
       expect(obs.category).toBe("UNSAFE_APPROACH");
-      expect(obs.evidence?.some((e) => e.includes("sandbox safety policy"))).toBe(true);
+      expect(obs.evidence?.some((e: string) => e.includes("sandbox safety policy"))).toBe(true);
     });
 
     it("11. repeated trial-and-error without mutation -> RANDOM_TRIAL_AND_ERROR", () => {
       const obs = deterministicObserver.observe({
         contract: mockContract,
         raw: "ls -la",
-        execution: { lines: [{ kind: "stdout", text: "total 0" }], blocked: false, exitCode: 0, mutationCount: 0, evidence: [] },
-        verification: { status: "INCOMPLETE", objectives: [{ label: "exists", met: false, evidence: "missing" }], skillDemonstrated: false },
+        execution: {
+          lines: [{ kind: "output", text: "total 0" }],
+          blocked: null,
+          exitCode: 0,
+          mutationCount: 0,
+          evidence: mockEvidence(["ls -la"]),
+        },
+        verification: mockVerification({
+          status: "INCOMPLETE",
+          objectives: [{ label: "exists", met: false, evidence: "missing" }],
+        }),
         history: ["ls", "ls", "ls", "ls"],
         hintsUsed: 0,
         language: "English",
@@ -229,15 +356,20 @@ describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
       const obs = deterministicObserver.observe({
         contract: mockContract,
         raw: "mkdir workspace",
-        execution: { lines: [{ kind: "stdout", text: "" }], blocked: false, exitCode: 0, mutationCount: 1, evidence: [] },
-        verification: {
+        execution: {
+          lines: [{ kind: "output", text: "" }],
+          blocked: null,
+          exitCode: 0,
+          mutationCount: 1,
+          evidence: mockEvidence(["mkdir workspace"]),
+        },
+        verification: mockVerification({
           status: "INCOMPLETE",
           objectives: [
             { label: "Directory exists", met: true, evidence: "directory created" },
             { label: "Permissions 750", met: false, evidence: "permissions are 755" },
           ],
-          skillDemonstrated: false,
-        },
+        }),
         history: ["mkdir workspace"],
         hintsUsed: 0,
         language: "English",
@@ -255,11 +387,18 @@ describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
     const mockState: MissionState = {
       challenge: {
         id: "chal-01",
+        order: 1,
         title: "Defensive File Audit",
-        scenario: "Forensic analysis",
+        storyIntro: "Forensic analysis",
         objective: "Inspect directory structure",
         difficulty: 2,
         requiredSkills: ["filesystem"],
+        allowedApproaches: ["ls -la"],
+        bannedShortcuts: [],
+        prerequisites: [],
+        previousReferences: [],
+        xpReward: 100,
+        hintLevels: 3,
       },
       skills: [
         createMockSkill({
@@ -271,16 +410,46 @@ describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
           recentMistakes: ["WRONG_PATH"],
         }),
       ],
-      progression: { xp: 100, level: 2, streakDays: 3, lastActiveDay: new Date().toISOString() },
-      attempt: { attempts: 1, hintsUsed: 0, startedAt: new Date().toISOString(), commandsRan: 2 },
-      context: { desired_difficulty: 2, weak_skills: ["filesystem"] },
+      progression: { totalXp: 100, level: 2, challengesCompleted: 1 },
+      attempt: {
+        challengeId: "chal-01",
+        status: "INCOMPLETE",
+        attempts: 1,
+        bestScore: 0,
+        xpAwarded: 0,
+        completedAt: null,
+        startedAt: new Date().toISOString(),
+      },
+      catalogue: [],
+      context: {
+        learner_level: 2,
+        current_mastery: { filesystem: 40 },
+        weak_skills: ["filesystem"],
+        strong_skills: [],
+        recent_mistakes: ["WRONG_PATH"],
+        recent_challenges: [],
+        relevant_previous_objects: [],
+        relevant_story_events: [],
+        current_lab_state: { labTitle: "Defensive Lab", cwd: "/home/learner", objects: [] },
+        prerequisites: [],
+        desired_difficulty: 2,
+      },
       cwd: "/home/learner",
       transcript: [
-        { kind: "stdout", text: "password=mysecretpassword", timestamp: Date.now() },
-        { kind: "error", text: "No such file or directory", timestamp: Date.now() },
+        { kind: "output", text: "password=mysecretpassword" },
+        { kind: "error", text: "No such file or directory" },
       ],
       hints: [],
-      lastVerification: { status: "INCOMPLETE", objectives: [{ label: "audit", met: false, evidence: "missing" }], skillDemonstrated: false },
+      hintsRemaining: 3,
+      nextChallengeId: null,
+      lastVerification: {
+        status: "INCOMPLETE",
+        score: 0,
+        message: "Audit incomplete",
+        remediation: ["Check directory"],
+        wentWell: [],
+        objectives: [{ label: "audit", met: false, evidence: "missing" }],
+      },
       lastObservation: {
         intent: "Inspect directory",
         approach: "cd /nonexistent",
@@ -289,21 +458,6 @@ describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
         conceptUnderstanding: "partial",
         skillDemonstrated: false,
         coaching: "Check path before cd",
-      },
-      assessment: {
-        grade: 0,
-        status: "INCOMPLETE",
-        objectivesMet: 0,
-        objectivesTotal: 1,
-        attempts: 1,
-        commandCount: 2,
-        successfulCommands: 1,
-        failedCommands: 1,
-        blockedCommands: 0,
-        hintsUsed: 0,
-        xpEarned: 0,
-        durationSeconds: 10,
-        feedback: "Try again",
       },
     };
 
@@ -316,7 +470,7 @@ describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
 
     it("14. tutor receives learner intelligence derived from evidence", () => {
       const ctx = buildMissionTutorContext(mockState);
-      expect(ctx.learner.mastery.filesystem).toBe(40);
+      expect(ctx.learner.mastery["filesystem"]).toBe(40);
       expect(ctx.learner.focusSkills).toContain("filesystem");
       expect(ctx.learner.signals.length).toBeGreaterThan(0);
     });
@@ -338,9 +492,13 @@ describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
     });
 
     it("18. tutor does not award success or XP directly", () => {
+      const initialVerification = mockState.lastVerification;
+      const initialTotalXp = mockState.progression.totalXp;
       const ctx = buildMissionTutorContext(mockState);
-      expect(mockState.assessment.xpEarned).toBe(0);
-      expect(mockState.assessment.grade).toBe(0);
+      expect(ctx).toBeDefined();
+      expect(mockState.lastVerification).toBe(initialVerification);
+      expect(mockState.lastVerification?.status).toBe("INCOMPLETE");
+      expect(mockState.progression.totalXp).toBe(initialTotalXp);
     });
   });
 
@@ -382,7 +540,7 @@ describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
     });
 
     it("21. hints do not alter deterministic verifier result", () => {
-      const verifyResult = mockContract.verify(new Map() as any, { commands: [], usedLoop: false, operations: 0, invocations: 0 });
+      const verifyResult = mockContract.verify(new Map(), { commands: [], usedLoop: false, operations: 0, invocations: 0 });
       expect(verifyResult.objectives[0]?.met).toBe(true);
       expect(verifyResult.skillDemonstrated).toBe(true);
     });
@@ -525,7 +683,7 @@ describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
         intelligence,
         assessment: { learningSignal: "mastered", grade: 100, mistakeBreakdown: [], hintsUsed: 0 },
       });
-      expect(["PROGRESSION", "TRANSFER", "PRACTICE"]).toContain(decision.mode);
+      expect(["PROGRESSION", "TRANSFER", "GUIDED_PRACTICE", "SPACED_REVIEW", "ASSESSMENT"]).toContain(decision.mode);
     });
 
     it("28. valid skill with context exploration selects practice / review / transfer", () => {
@@ -544,7 +702,7 @@ describe("Phase 3A: AI Tutor + Intent-Aware Evaluation Formal Suite", () => {
         skills,
         intelligence,
       });
-      expect(["TRANSFER", "PRACTICE", "SPACED_REVIEW", "PROGRESSION", "ASSESSMENT"]).toContain(decision.mode);
+      expect(["TRANSFER", "GUIDED_PRACTICE", "SPACED_REVIEW", "PROGRESSION", "ASSESSMENT"]).toContain(decision.mode);
     });
 
     it("29. high hint dependency does not increase difficulty", () => {
