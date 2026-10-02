@@ -10,7 +10,7 @@ import type { Contract, VerifyOutcome } from "./contracts.server";
 export type GeneratedObjectivePlan = {
   label: string;
   path: string;
-  objectType: "file" | "directory";
+  objectType: "file" | "directory" | "process" | "network";
   permissions?: string;
   contentEquals?: string;
   contentContains?: string;
@@ -69,10 +69,18 @@ const safePlan = (plan: GeneratedEvaluationPlan): GeneratedEvaluationPlan | null
     const path = normalizePath(item.path);
     if (!path || typeof item.label !== "string") return null;
     if (item.permissions !== undefined && !/^\d{3}$/.test(item.permissions)) return null;
+    const objType =
+      item.objectType === "directory"
+        ? "directory"
+        : item.objectType === "process"
+          ? "process"
+          : item.objectType === "network"
+            ? "network"
+            : "file";
     objectives.push({
       label: item.label.slice(0, 160),
       path,
-      objectType: item.objectType === "directory" ? "directory" : "file",
+      objectType: objType,
       ...(item.permissions ? { permissions: item.permissions } : {}),
       ...(typeof item.contentEquals === "string"
         ? { contentEquals: item.contentEquals.slice(0, 2000) }
@@ -177,6 +185,30 @@ export function generatedDefinitionToContract(
     ...(plan.requiredCapabilities ? { requiredCapabilities: plan.requiredCapabilities } : {}),
     verify(world: World, evidence: MethodEvidence): VerifyOutcome {
       const objectives: ObjectiveResult[] = plan.objectives.map((expected) => {
+        if (expected.objectType === "process") {
+          const inspected = evidence.commands.some((c) =>
+            /^(?:ps|pgrep|top)\b/.test(c.trim()),
+          );
+          return {
+            label: expected.label,
+            met: inspected,
+            evidence: inspected
+              ? "a process-inspection command was recorded in evidence"
+              : "no process-inspection command was recorded in evidence",
+          };
+        }
+        if (expected.objectType === "network") {
+          const inspected = evidence.commands.some((c) =>
+            /^(?:ip|ss|netstat)\b/.test(c.trim()),
+          );
+          return {
+            label: expected.label,
+            met: inspected,
+            evidence: inspected
+              ? "a network-inspection command was recorded in evidence"
+              : "no network-inspection command was recorded in evidence",
+          };
+        }
         const actual = world.get(expected.path);
         if (expected.mustNotExist) {
           return {

@@ -13,11 +13,12 @@ export function generatedDefinitionToExerciseContract(
 
   for (const [index, objective] of definition.evaluationPlan.objectives.entries()) {
     const id = `objective-${index + 1}`;
+    const objType = objective.objectType === "directory" ? "directory" : "file";
     requirements.push({
       id,
       kind: "filesystem",
       path: objective.path,
-      objectType: objective.objectType,
+      objectType: objType,
       exists: !objective.mustNotExist,
     });
     if (objective.permissions) {

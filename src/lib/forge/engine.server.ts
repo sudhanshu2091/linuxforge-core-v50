@@ -17,7 +17,8 @@ import {
   type GeneratedDefinition,
 } from "./generated-contract.server";
 import type { ModelObject, World } from "./executor.server";
-import { ensureLabSession, executeInLab, sendTerminalSignal } from "./sandbox/lab.server";
+import { ensureLabSession, executeInLab, observeLabEnvironment, sendTerminalSignal } from "./sandbox/lab.server";
+import type { CanonicalEnvironmentModel, MissionArtifact } from "./environment/types";
 import {
   appendChallengeEvents,
   appendNarrativeEvent,
@@ -1522,6 +1523,9 @@ export async function assessMission(
     try {
       let knownScenarioArtifacts: string[] = [];
       let storyObjects: string[] = [];
+      let canonicalEnvironment: CanonicalEnvironmentModel | undefined = undefined;
+      let supportedCommandKinds: string[] | undefined = undefined;
+      let trackedMissionArtifacts: MissionArtifact[] | undefined = undefined;
       try {
         const lab = await ensureLab(db, userId);
         if (lab?.id) {
@@ -1530,9 +1534,23 @@ export async function assessMission(
             knownScenarioArtifacts = views.map((v) => v.path);
             storyObjects = views.map((v) => v.name);
           }
+          const sessionRes = await ensureLabSession(db, userId, { startIfNeeded: false });
+          if (sessionRes.ok) {
+            const obsRes = await observeLabEnvironment(db, userId, sessionRes.value);
+            if (obsRes.ok) {
+              canonicalEnvironment = obsRes.model;
+              trackedMissionArtifacts = obsRes.model.artifacts;
+              const caps = sessionRes.value.provider.capabilities;
+              supportedCommandKinds = [
+                "mkdir", "touch", "rm", "mv", "cp", "echo", "cat", "chmod", "chown", "pwd", "ls", "cd", "test", "grep", "for", "clear", "help",
+                ...(caps.processes ? ["ps", "pgrep", "top"] : []),
+                ...(caps.network ? ["ip", "ss", "netstat"] : []),
+              ];
+            }
+          }
         }
       } catch {
-        // lab/world is optional
+        // lab/world/environment observation is optional and safe-fail
       }
 
       const recentMistakes = assessment.mistakeBreakdown.map((m) => m.category);
@@ -1547,6 +1565,8 @@ export async function assessMission(
           storyObjects,
           currentDifficulty: contract.difficulty,
           trainingDecision,
+          environment: canonicalEnvironment,
+          knownScenarioArtifacts,
         });
         const { response, fallbackUsed } = await aiMissionGenerationService({
           trainingDecision,
@@ -1555,6 +1575,8 @@ export async function assessMission(
           recentMistakes,
           knownScenarioArtifacts,
           difficulty: contract.difficulty,
+          environment: canonicalEnvironment,
+          supportedCommandKinds,
         });
         if (!fallbackUsed && response?.exercise) {
           aiCandidateExercise = response.exercise;
@@ -1563,7 +1585,7 @@ export async function assessMission(
         // AI proposal generation failure safely swallowed; buildAdaptiveMissionCandidate will use deterministic candidate
       }
 
-      const candidate = buildAdaptiveMissionCandidate({
+      let candidate = buildAdaptiveMissionCandidate({
         skills,
         trainingDecision: enrichedAssessment.trainingDecision,
         assessment: {
@@ -1577,7 +1599,31 @@ export async function assessMission(
         currentDifficulty: contract.difficulty,
         knownScenarioArtifacts,
         candidateExercise: aiCandidateExercise,
+        environment: canonicalEnvironment,
+        supportedCommandKinds,
+        trackedMissionArtifacts,
       });
+
+      if (!candidate.validation.ok && aiCandidateExercise) {
+        // AI proposal rejected by deterministic V2 validation; fall back to deterministic candidate
+        candidate = buildAdaptiveMissionCandidate({
+          skills,
+          trainingDecision: enrichedAssessment.trainingDecision,
+          assessment: {
+            learningSignal: enrichedAssessment.learningSignal,
+            grade: assessment.grade,
+            hintsUsed: hints.length,
+            mistakeBreakdown: assessment.mistakeBreakdown,
+          },
+          recentMistakes,
+          storyObjects,
+          currentDifficulty: contract.difficulty,
+          knownScenarioArtifacts,
+          environment: canonicalEnvironment,
+          supportedCommandKinds,
+          trackedMissionArtifacts,
+        });
+      }
 
       if (candidate.validation.ok && candidate.contract && candidate.exercise) {
         await persistValidatedAdaptiveMission(db, userId, candidate);

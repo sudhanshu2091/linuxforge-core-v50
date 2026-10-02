@@ -27,6 +27,13 @@ const EXECUTABLE_COMMANDS = new Set([
   "clear",
   "help",
   "for",
+  "ps",
+  "pgrep",
+  "top",
+  "ip",
+  "ss",
+  "netstat",
+  "grep",
 ]);
 
 export type GenerationValidation = {
@@ -69,7 +76,8 @@ function planIsSafe(exercise: AdaptiveExercise): string[] {
   for (const objective of plan.objectives) {
     if (!safeRelativePath(objective.path))
       reasons.push(`Unsafe objective path: ${String(objective.path)}`);
-    if (objective.objectType !== "file" && objective.objectType !== "directory")
+    const validTypes = new Set(["file", "directory", "process", "network"]);
+    if (!validTypes.has(objective.objectType))
       reasons.push("Objective objectType is invalid.");
     if (objective.permissions !== undefined && !/^\d{3}$/.test(objective.permissions))
       reasons.push("Permissions must be exactly three octal digits.");

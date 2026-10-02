@@ -65,7 +65,7 @@ function skillPriority(skill: SkillMemoryView): number {
   const fragility = 100 - (skill.retention ?? skill.mastery);
   const confidenceGap = 100 - skill.confidence;
   const due = skill.nextReview && Date.parse(skill.nextReview) <= Date.now() ? 25 : 0;
-  const errors = Math.min(20, skill.recentMistakes.length * 5);
+  const errors = Math.min(20, (skill.recentMistakes ?? []).length * 5);
   const evidenceGap = Math.max(0, 10 - (skill.evidenceCount ?? skill.attempts));
   return (
     weakness * 0.38 +
@@ -96,7 +96,7 @@ function collectMistakes(
     ...(assessment?.mistakeBreakdown?.flatMap((item) =>
       Array.from({ length: item.count }, () => item.category),
     ) ?? []),
-    ...skills.flatMap((skill) => skill.recentMistakes),
+    ...skills.flatMap((skill) => skill.recentMistakes ?? []),
   ];
   const counts = new Map<ObservationCategory, number>();
   for (const value of values) {

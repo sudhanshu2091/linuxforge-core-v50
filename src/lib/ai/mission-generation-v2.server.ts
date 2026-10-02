@@ -176,15 +176,29 @@ function isCanonicalCapability(key: string): key is RuntimeCapabilityKey {
 function validateEnvironmentSupport(
   exercise: AdaptiveExercise,
   env?: CanonicalEnvironmentModel,
+  supportedCommandKinds?: string[],
 ): { valid: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  const plan = exercise.evaluationPlan;
+
+  // Check supported command kinds if provided
+  if (supportedCommandKinds && supportedCommandKinds.length > 0 && plan?.requiredCommandKinds) {
+    const supportedSet = new Set(supportedCommandKinds.map((k) => k.toLowerCase().trim()));
+    for (const cmd of plan.requiredCommandKinds) {
+      if (!supportedSet.has(cmd.toLowerCase().trim())) {
+        reasons.push(
+          `Command '${cmd}' required by exercise is not supported by current environment.`,
+        );
+      }
+    }
+  }
+
   if (!env) {
     // If no specific environment model is supplied (e.g. static theoretical question),
     // we only check that executable plans don't assume non-standard capabilities.
-    return { valid: true, reasons: [] };
+    return { valid: reasons.length === 0, reasons };
   }
 
-  const reasons: string[] = [];
-  const plan = exercise.evaluationPlan;
   const caps = env.runtime?.capabilities;
   const net = env.network;
 
@@ -611,7 +625,11 @@ export function validateAndPublishMissionV2(
     }
 
     // Gate 2: ENVIRONMENT VALIDATE
-    const envValidation = validateEnvironmentSupport(currentCandidate, context?.environment);
+    const envValidation = validateEnvironmentSupport(
+      currentCandidate,
+      context?.environment,
+      context?.supportedCommandKinds,
+    );
     if (!envValidation.valid) {
       return {
         ok: false,

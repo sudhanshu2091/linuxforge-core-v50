@@ -264,7 +264,7 @@ export type AdaptiveExercise = {
     objectives: Array<{
       label: string;
       path: string;
-      objectType: "file" | "directory";
+      objectType: "file" | "directory" | "process" | "network";
       permissions?: string;
       contentEquals?: string;
       contentContains?: string;

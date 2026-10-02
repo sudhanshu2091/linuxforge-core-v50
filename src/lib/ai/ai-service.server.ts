@@ -38,6 +38,7 @@ import {
   type ValidationResult,
   type HintStage,
   type SkillId,
+  HINT_STAGES,
 } from "./ai-contracts";
 import { recordAiTelemetry } from "./ai-telemetry.server";
 import { createDeterministicCandidate } from "./adaptive-mission-bridge";

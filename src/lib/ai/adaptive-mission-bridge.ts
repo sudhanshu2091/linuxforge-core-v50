@@ -41,6 +41,8 @@ import { analyzeLearner, type LearnerIntelligence } from "./learner-intelligence
 import { selectAdaptiveTraining, type TrainingDecision } from "./adaptive-training";
 import type { MissionAssessment } from "@/lib/forge/assessment.server";
 
+import { evaluateConceptReadiness, type ConceptReadinessResult } from "./concept-readiness";
+
 export type AdaptiveMissionBridgeInput = {
   skills: readonly SkillMemoryView[];
   intelligence?: LearnerIntelligence | undefined;
@@ -64,6 +66,7 @@ export type AdaptiveMissionBridgeInput = {
   knownScenarioArtifacts?: string[] | undefined;
   trackedMissionArtifacts?: MissionArtifact[] | undefined;
   requiredPriorArtifacts?: Array<string | RequiredPriorArtifactSpec> | undefined;
+  readiness?: ConceptReadinessResult | undefined;
 };
 
 export type AdaptiveMissionCandidateResult = {
@@ -73,6 +76,7 @@ export type AdaptiveMissionCandidateResult = {
   validation: MissionV2ValidationResult;
   contract?: Contract | undefined;
   exercise?: AdaptiveExercise | undefined;
+  readiness?: ConceptReadinessResult | undefined;
 };
 
 function titleCase(str: string): string {
@@ -92,10 +96,23 @@ export function createDeterministicCandidate(blueprint: MissionBlueprint): Adapt
   const skills: SkillId[] = [primary, ...supporting];
 
   let path = "workspace/target.txt";
-  let objectType: "file" | "directory" = "file";
+  let objectType: "file" | "directory" | "process" | "network" = "file";
   let permissions: string | undefined = undefined;
   let contentEquals: string | undefined = "verified";
   let requiredCommandKinds: string[] = ["mkdir", "touch", "echo"];
+  let requiredCapabilities: Array<
+    | "interactiveShell"
+    | "streaming"
+    | "resize"
+    | "processes"
+    | "services"
+    | "environmentVariables"
+    | "network"
+    | "snapshots"
+    | "pauseResume"
+    | "packages"
+  > | undefined = undefined;
+  let minimumMutations = 1;
 
   if (primary === "permissions") {
     path = "workspace";
@@ -114,15 +131,19 @@ export function createDeterministicCandidate(blueprint: MissionBlueprint): Adapt
     contentEquals = "item1\nitem2";
     requiredCommandKinds = ["for", "echo"];
   } else if (primary === "processes") {
-    path = "workspace/proc.txt";
-    objectType = "file";
-    contentEquals = "active";
-    requiredCommandKinds = ["touch", "echo"];
+    path = "processes";
+    objectType = "process";
+    contentEquals = undefined;
+    requiredCommandKinds = ["ps"];
+    requiredCapabilities = ["processes"];
+    minimumMutations = 0;
   } else if (primary === "networking") {
-    path = "workspace/net.txt";
-    objectType = "file";
-    contentEquals = "connected";
-    requiredCommandKinds = ["touch", "cat"];
+    path = "network";
+    objectType = "network";
+    contentEquals = undefined;
+    requiredCommandKinds = ["ip"];
+    requiredCapabilities = ["network"];
+    minimumMutations = 0;
   } else if (primary === "shell-scripting") {
     path = "workspace/run.sh";
     objectType = "file";
@@ -142,16 +163,32 @@ export function createDeterministicCandidate(blueprint: MissionBlueprint): Adapt
       ? "Repair and correct prior misconfigurations by following secure practices."
       : "Complete the planned operations accurately in the workspace.";
 
-  const objective =
+  const shapePrefix =
     blueprint.objectiveShape && blueprint.objectiveShape.length >= 20
-      ? `${blueprint.objectiveShape} ${repairText}`.trim()
-      : `Audit and configure the ${primary} workspace in the isolated training lab. ${repairText}`;
+      ? `${blueprint.objectiveShape} `
+      : "";
+
+  const objective =
+    primary === "processes"
+      ? `${shapePrefix}Inspect the running processes with ps in the isolated training lab. ${repairText}`.trim()
+      : primary === "networking"
+        ? `${shapePrefix}Inspect the local network interfaces with ip in the isolated training lab. ${repairText}`.trim()
+        : blueprint.objectiveShape && blueprint.objectiveShape.length >= 20
+          ? `${blueprint.objectiveShape} ${repairText}`.trim()
+          : `Audit and configure the ${primary} workspace in the isolated training lab. ${repairText}`;
+
+  const allowedApproaches =
+    primary === "processes"
+      ? ["ps", "ps aux", "ps -ef"]
+      : primary === "networking"
+        ? ["ip addr", "ip a", "ip address"]
+        : [`Use supported Linux utilities for ${primary} configuration.`];
 
   return {
     id: `adaptive-${primary}-${blueprint.archetype.toLowerCase()}-${blueprint.difficulty}`,
     kind: "mission",
     title: `${titleCase(primary)} ${titleCase(blueprint.archetype)} Mission`,
-    scenario: `The security team requires an isolated environment verification for ${primary}. You must configure and verify the required assets in the training lab safely.`,
+    scenario: `The security team requires an isolated environment verification for ${primary}. You must inspect or configure the required assets in the training lab safely.`,
     objective,
     skills,
     difficulty: blueprint.difficulty,
@@ -168,7 +205,7 @@ export function createDeterministicCandidate(blueprint: MissionBlueprint): Adapt
         ? [...blueprint.evidenceFocus]
         : ["objective completion", "skill demonstration"],
     learnerReason: blueprint.rationale.slice(0, 1200),
-    allowedApproaches: [`Use supported Linux utilities for ${primary} configuration.`],
+    allowedApproaches,
     bannedShortcuts: ["Do not attempt to access host resources or bypass security filters."],
     hints: [`Inspect the current directory and use appropriate commands for ${primary}.`],
     successStory: `Successfully demonstrated and verified ${primary} competence in the lab.`,
@@ -185,7 +222,8 @@ export function createDeterministicCandidate(blueprint: MissionBlueprint): Adapt
         },
       ],
       requiredCommandKinds,
-      minimumMutations: 1,
+      minimumMutations,
+      ...(requiredCapabilities ? { requiredCapabilities } : {}),
     },
   };
 }
@@ -226,6 +264,16 @@ export function buildAdaptiveMissionCandidate(
             currentDifficulty: input.currentDifficulty ?? 1,
           });
 
+  const readiness =
+    input.readiness ??
+    evaluateConceptReadiness({
+      targetSkill: trainingDecision.primarySkill,
+      environment: input.environment,
+      skills: input.skills,
+      knownScenarioArtifacts: input.knownScenarioArtifacts,
+      supportedCommandKinds: input.supportedCommandKinds,
+    });
+
   const rawBlueprint = buildMissionBlueprint({
     skills: input.skills,
     intelligence,
@@ -234,6 +282,9 @@ export function buildAdaptiveMissionCandidate(
     ...(input.storyObjects !== undefined ? { storyObjects: input.storyObjects } : {}),
     currentDifficulty: input.currentDifficulty ?? trainingDecision.difficulty,
     trainingDecision,
+    environment: input.environment,
+    readiness,
+    knownScenarioArtifacts: input.knownScenarioArtifacts,
   });
 
   const validSupporting = rawBlueprint.supportingSkills.filter(
@@ -272,5 +323,6 @@ export function buildAdaptiveMissionCandidate(
     validation,
     contract: validation.ok ? validation.contract : undefined,
     exercise: validation.ok ? validation.exercise : undefined,
+    readiness,
   };
 }

@@ -186,6 +186,8 @@ export type MissionGenerationRequest = {
   recentTopics?: readonly string[] | undefined;
   knownScenarioArtifacts?: readonly string[] | undefined;
   difficulty: number;
+  environment?: import("@/lib/forge/environment/types").CanonicalEnvironmentModel | undefined;
+  supportedCommandKinds?: readonly string[] | undefined;
 };
 
 export type MissionGenerationResponse = {
@@ -364,26 +366,110 @@ export function validateMissionGenerationResponse(data: unknown): ValidationResu
     return { ok: false, error: "Missing mission objective" };
   }
 
+  // Authoritative executable validation: Skills must be non-empty and all valid
   const rawSkills = Array.isArray(exerciseCandidate["skills"]) ? exerciseCandidate["skills"] : [];
-  const skills = rawSkills.filter((s): s is SkillId =>
-    typeof s === "string" && (VALID_SKILL_IDS as readonly string[]).includes(s),
-  );
-  if (!skills.length) {
+  if (!rawSkills.length) {
     return { ok: false, error: "Mission must target at least one valid skill" };
   }
+  for (const s of rawSkills) {
+    if (typeof s !== "string" || !(VALID_SKILL_IDS as readonly string[]).includes(s)) {
+      return { ok: false, error: `Invalid skill '${String(s)}' specified in mission` };
+    }
+  }
+  const skills = rawSkills as SkillId[];
 
-  const difficulty = typeof exerciseCandidate["difficulty"] === "number" && Number.isFinite(exerciseCandidate["difficulty"])
-    ? Math.max(1, Math.min(5, Math.floor(exerciseCandidate["difficulty"])))
-    : 1;
+  // Authoritative executable validation: Difficulty must be finite integer between 1 and 5
+  if (exerciseCandidate["difficulty"] !== undefined) {
+    if (
+      typeof exerciseCandidate["difficulty"] !== "number" ||
+      !Number.isInteger(exerciseCandidate["difficulty"]) ||
+      exerciseCandidate["difficulty"] < 1 ||
+      exerciseCandidate["difficulty"] > 5
+    ) {
+      return { ok: false, error: "Mission difficulty must be an integer between 1 and 5" };
+    }
+  }
+  const difficulty = typeof exerciseCandidate["difficulty"] === "number" ? exerciseCandidate["difficulty"] : 1;
 
-  const plan = exerciseCandidate["evaluationPlan"];
-  if (!plan || typeof plan !== "object") {
+  // Authoritative executable validation: evaluationPlan and objectives safety
+  const rawPlan = exerciseCandidate["evaluationPlan"];
+  if (!rawPlan || typeof rawPlan !== "object") {
     return { ok: false, error: "Executable mission candidate requires evaluationPlan" };
   }
+  const plan = rawPlan as Record<string, unknown>;
 
+  if (!Array.isArray(plan["objectives"]) || plan["objectives"].length < 1 || plan["objectives"].length > 12) {
+    return { ok: false, error: "Evaluation plan requires between 1 and 12 objectives" };
+  }
+
+  const CANONICAL_CAPABILITIES = new Set([
+    "interactiveShell",
+    "streaming",
+    "resize",
+    "processes",
+    "services",
+    "environmentVariables",
+    "network",
+    "snapshots",
+    "pauseResume",
+    "packages",
+  ]);
+
+  if (plan["requiredCapabilities"] !== undefined) {
+    if (!Array.isArray(plan["requiredCapabilities"])) {
+      return { ok: false, error: "requiredCapabilities must be an array of capability strings" };
+    }
+    for (const cap of plan["requiredCapabilities"]) {
+      if (typeof cap !== "string" || !CANONICAL_CAPABILITIES.has(cap.trim())) {
+        return { ok: false, error: `Unknown or unsupported capability '${String(cap)}' in evaluation plan` };
+      }
+    }
+  }
+
+  if (plan["minimumMutations"] !== undefined) {
+    if (
+      typeof plan["minimumMutations"] !== "number" ||
+      !Number.isInteger(plan["minimumMutations"]) ||
+      plan["minimumMutations"] < 0
+    ) {
+      return { ok: false, error: "minimumMutations must be a non-negative integer" };
+    }
+  }
+
+  const VALID_OBJECT_TYPES = new Set(["file", "directory", "process", "network"]);
+  for (const rawObj of plan["objectives"]) {
+    if (!rawObj || typeof rawObj !== "object") {
+      return { ok: false, error: "Evaluation objective must be an object" };
+    }
+    const item = rawObj as Record<string, unknown>;
+    if (typeof item["label"] !== "string" || !item["label"].trim()) {
+      return { ok: false, error: "Evaluation objective requires non-empty label" };
+    }
+    if (typeof item["path"] !== "string" || !item["path"].trim()) {
+      return { ok: false, error: "Evaluation objective requires non-empty path" };
+    }
+    const pathStr = item["path"].trim();
+    if (pathStr.startsWith("/") || pathStr.includes("..")) {
+      return { ok: false, error: `Unsafe filesystem path '${pathStr}' in objective` };
+    }
+    const pathParts = pathStr.split("/").filter(Boolean);
+    if (pathParts.some((part) => part === "." || !/^[A-Za-z0-9._-]+$/.test(part))) {
+      return { ok: false, error: `Objective path '${pathStr}' contains invalid characters` };
+    }
+    if (typeof item["objectType"] !== "string" || !VALID_OBJECT_TYPES.has(item["objectType"])) {
+      return { ok: false, error: `Invalid objective objectType '${String(item["objectType"])}'` };
+    }
+    if (item["permissions"] !== undefined) {
+      if (typeof item["permissions"] !== "string" || !/^\d{3}$/.test(item["permissions"])) {
+        return { ok: false, error: `Permissions must be exactly three octal digits, got '${String(item["permissions"])}'` };
+      }
+    }
+  }
+
+  // Safe normalization for non-authoritative presentation/pedagogical fields
   const id = typeof exerciseCandidate["id"] === "string" && exerciseCandidate["id"].trim()
     ? exerciseCandidate["id"].trim()
-    : `adaptive-${skills[0]}-${difficulty}-${Date.now()}`;
+    : `adaptive-${skills[0]}-${difficulty}`;
 
   const textList = (v: unknown, fallback: string[]): string[] =>
     Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").slice(0, 10) : fallback;
@@ -410,7 +496,7 @@ export function validateMissionGenerationResponse(data: unknown): ValidationResu
     successStory: typeof exerciseCandidate["successStory"] === "string" ? exerciseCandidate["successStory"].slice(0, 500) : "Successfully completed the mission.",
     failureStory: typeof exerciseCandidate["failureStory"] === "string" ? exerciseCandidate["failureStory"].slice(0, 500) : "The mission requirements were not verified.",
     remediation: textList(exerciseCandidate["remediation"], ["Review the command syntax and try again."]),
-    evaluationPlan: plan as NonNullable<AdaptiveExercise["evaluationPlan"]>,
+    evaluationPlan: plan as unknown as NonNullable<AdaptiveExercise["evaluationPlan"]>,
   };
 
   return {

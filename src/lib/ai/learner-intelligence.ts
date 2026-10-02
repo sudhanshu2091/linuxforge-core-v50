@@ -45,19 +45,19 @@ export function analyzeLearner(
     .filter(
       (s) =>
         s.mastery >= 55 &&
-        (s.confidence < 60 ||
+        ((s.confidence ?? 50) < 60 ||
           (s.retention ?? s.mastery) < 60 ||
-          s.recentMistakes.some((m) => m === "SKILL_BYPASS" || m === "UNSAFE_APPROACH")),
+          (s.recentMistakes ?? []).some((m) => m === "SKILL_BYPASS" || m === "UNSAFE_APPROACH")),
     )
     .sort((a, b) => (a.retention ?? a.mastery) - (b.retention ?? b.mastery))
     .slice(0, 4)
     .map((s) => s.skillId);
   const masteredSkills = skills
-    .filter((s) => s.mastery >= 80 && s.confidence >= 70 && s.recentMistakes.length === 0)
+    .filter((s) => s.mastery >= 80 && (s.confidence ?? 50) >= 70 && (s.recentMistakes ?? []).length === 0)
     .map((s) => s.skillId);
 
   const mistakeCounts = new Map<ObservationCategory, number>();
-  for (const value of [...recentMistakes, ...skills.flatMap((s) => s.recentMistakes)]) {
+  for (const value of [...recentMistakes, ...skills.flatMap((s) => s.recentMistakes ?? [])]) {
     if (!isMistake(value)) continue;
     mistakeCounts.set(value, (mistakeCounts.get(value) ?? 0) + 1);
   }
@@ -71,19 +71,19 @@ export function analyzeLearner(
     .map(([category]) => category);
 
   const hintDependency = skills.length
-    ? Math.round(skills.reduce((sum, s) => sum + s.hintDependency, 0) / skills.length)
+    ? Math.round(skills.reduce((sum, s) => sum + (s.hintDependency ?? 0), 0) / skills.length)
     : 0;
   const independence = skills.length
     ? Math.round(
         skills.reduce(
-          (sum, s) => sum + (s.independence ?? Math.max(0, 100 - s.hintDependency)),
+          (sum, s) => sum + (s.independence ?? Math.max(0, 100 - (s.hintDependency ?? 0))),
           0,
         ) / skills.length,
       )
     : 50;
   const confidence = skills.length
-    ? Math.round(skills.reduce((sum, s) => sum + s.confidence, 0) / skills.length)
-    : 0;
+    ? Math.round(skills.reduce((sum, s) => sum + (s.confidence ?? 50), 0) / skills.length)
+    : 50;
   const readiness = clamp(
     Math.round(
       averageMastery * 0.45 + confidence * 0.25 + independence * 0.2 + (100 - hintDependency) * 0.1,
