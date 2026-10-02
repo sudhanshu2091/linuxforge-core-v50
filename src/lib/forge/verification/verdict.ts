@@ -16,6 +16,13 @@ export function classifyCompletionQuality(input: CompletionQualityInput): Comple
       consumed: false,
       consumedReason: "NONE",
     };
+  if (input.skillDemonstrated === false || input.bypassed === true)
+    return {
+      mode: "ASSISTED",
+      independent: false,
+      consumed: false,
+      consumedReason: "BYPASS",
+    };
   if (assistance === 0)
     return {
       mode: "DIRECT",
@@ -28,13 +35,13 @@ export function classifyCompletionQuality(input: CompletionQualityInput): Comple
       mode: "ASSISTED",
       independent: false,
       consumed: false,
-      consumedReason: "NONE",
+      consumedReason: "ASSISTED",
     };
   return {
     mode: "HEAVILY_ASSISTED",
     independent: false,
     consumed: false,
-    consumedReason: "NONE",
+    consumedReason: "ASSISTED",
   };
 }
 

@@ -30,7 +30,10 @@ import {
 } from "./persistence.server";
 import { buildAdaptiveMissionCandidate } from "@/lib/ai/adaptive-mission-bridge";
 import { buildMissionBlueprint } from "@/lib/ai/mission-generator";
-import { aiMissionGenerationService } from "@/lib/ai/ai-service.server";
+import {
+  aiMissionGenerationService,
+  aiAdaptiveReasoningService,
+} from "@/lib/ai/ai-service.server";
 
 export { persistValidatedAdaptiveMission } from "./persistence.server";
 import { aiObserver } from "./observer.server";
@@ -1557,7 +1560,30 @@ export async function assessMission(
 
       let aiCandidateExercise: AdaptiveExercise | undefined = undefined;
       try {
-        const trainingDecision = enrichedAssessment.trainingDecision as TrainingDecision;
+        let trainingDecision = enrichedAssessment.trainingDecision as TrainingDecision;
+        try {
+          const reasoning = await aiAdaptiveReasoningService({
+            skills,
+            recentMistakes,
+            currentDifficulty: contract.difficulty,
+            recentTopics: storyObjects,
+          });
+          if (reasoning.response && !reasoning.fallbackUsed) {
+            trainingDecision = {
+              ...trainingDecision,
+              reason: reasoning.response.pedagogicalRationale || trainingDecision.reason,
+              supportingSkills: [
+                ...new Set([
+                  ...trainingDecision.supportingSkills,
+                  ...reasoning.response.supportingSkills,
+                ]),
+              ].slice(0, 2),
+            };
+          }
+        } catch {
+          // AI reasoning failure safely swallowed, deterministic trainingDecision used
+        }
+
         const blueprint = buildMissionBlueprint({
           skills,
           intelligence: analyzeLearner(skills, recentMistakes),

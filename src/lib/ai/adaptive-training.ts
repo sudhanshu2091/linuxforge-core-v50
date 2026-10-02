@@ -7,6 +7,11 @@ import type {
 import type { LearnerIntelligence } from "./learner-intelligence";
 import { decideProgression } from "@/lib/learner/mastery-engine";
 import { buildLearnerJourney } from "@/lib/learner/journey-engine";
+import {
+  buildSpecialTrainingBatch,
+  evaluateBatchTrigger,
+  type TrainingBatch,
+} from "@/lib/learner/training-batches";
 
 export type LearningMode =
   "REMEDIATION" | "GUIDED_PRACTICE" | "SPACED_REVIEW" | "TRANSFER" | "PROGRESSION" | "ASSESSMENT";
@@ -26,6 +31,7 @@ export type TrainingDecision = {
   masteryGate: "PRACTICE" | "REVIEW" | "CONFIRM_MASTERY" | "ADVANCE" | "REMEDIATE";
   journeyPhase: string;
   journeyNextSkills: SkillId[];
+  specialBatch?: TrainingBatch | undefined;
 };
 
 const SKILL_GRAPH: Record<SkillId, SkillId[]> = {
@@ -318,6 +324,25 @@ export function selectAdaptiveTraining(input: {
   if (mode === "PROGRESSION")
     constraints.push("Increase complexity without removing objective verifiability.");
 
+  const batchTrigger = evaluateBatchTrigger({
+    skills: input.skills,
+    intelligence: input.intelligence,
+    recentMistakes: mistakes,
+    assessment: input.assessment,
+  });
+
+  const specialBatch =
+    batchTrigger.batchRecommended && batchTrigger.recommendedBatchType
+      ? buildSpecialTrainingBatch({
+          batchType: batchTrigger.recommendedBatchType,
+          primarySkill: batchTrigger.primarySkill ?? primary,
+          skills: input.skills,
+          intelligence: input.intelligence,
+          targetWeakness: batchTrigger.targetWeakness,
+          baseDifficulty: clamp(difficulty),
+        })
+      : undefined;
+
   return {
     version: "v37",
     mode,
@@ -332,5 +357,6 @@ export function selectAdaptiveTraining(input: {
     masteryGate: masteryDecision.action,
     journeyPhase: journey.currentPhaseName,
     journeyNextSkills: journey.nextSkills,
+    ...(specialBatch ? { specialBatch } : {}),
   };
 }

@@ -63,10 +63,13 @@ export function assessSkillMastery(skill: SkillMemoryView, now = new Date()): Sk
     rate >= 75 &&
     recentScore >= 80 &&
     evidenceCount >= 3 &&
+    skill.successfulAttempts >= 2 &&
+    (skill.difficultyRating === undefined || skill.difficultyRating >= 2.0) &&
+    !due &&
     !riskMistake
   ) {
-    // A skill can be mastered despite an occasional harmless typo/path error.
-    // Concept/safety/reliability mistakes block a mastery declaration.
+    // A skill can be mastered only through multiple varied independent evidence points.
+    // Solving a single question or only trivial level-1 patterns never grants mastery.
     state = "MASTERED";
   } else if (
     skill.mastery >= 70 &&
@@ -89,6 +92,10 @@ export function assessSkillMastery(skill: SkillMemoryView, now = new Date()): Sk
   if (rate < 75) missingGates.push("success rate ≥ 75%");
   if (recentScore < 80) missingGates.push("recent score ≥ 80");
   if (evidenceCount < 3) missingGates.push("at least 3 evidence points");
+  if (skill.successfulAttempts < 2) missingGates.push("at least 2 successful attempts");
+  if (skill.difficultyRating !== undefined && skill.difficultyRating < 2.0)
+    missingGates.push("varied difficulty exposure (difficulty rating ≥ 2.0)");
+  if (due) missingGates.push("retention review due");
   if (riskMistake) missingGates.push("resolve recent concept/safety evidence");
 
   const score = clamp(

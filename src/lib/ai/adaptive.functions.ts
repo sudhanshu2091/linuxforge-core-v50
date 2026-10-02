@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { loadTutorContext } from "@/lib/forge/engine.server";
 import { generateAdaptiveExercise } from "./provider.server";
+import { aiAdaptiveReasoningService } from "./ai-service.server";
 import { buildMissionBlueprint } from "./mission-generator";
 import { analyzeLearner } from "./learner-intelligence";
 import { selectAdaptiveTraining } from "./adaptive-training";
@@ -74,18 +75,42 @@ export const generateAdaptiveExerciseFn = createServerFn({ method: "POST" })
     }));
     const recentMistakes = skillViews.flatMap((s) => s.recentMistakes).slice(-20);
     const intelligence = analyzeLearner(skillViews, recentMistakes);
-    const trainingDecision = selectAdaptiveTraining({
+    let activeDecision = selectAdaptiveTraining({
       skills: skillViews,
       intelligence,
       currentDifficulty: Math.max(1, Math.min(5, progression?.level ?? 1)),
     });
+
+    try {
+      const reasoning = await aiAdaptiveReasoningService({
+        skills: skillViews,
+        recentMistakes: recentMistakes.filter((m): m is any => typeof m === "string"),
+        currentDifficulty: activeDecision.difficulty,
+        recentTopics: learner.recentEvents.map((e) => e.summary),
+      });
+      if (reasoning.response && !reasoning.fallbackUsed) {
+        activeDecision = {
+          ...activeDecision,
+          reason: reasoning.response.pedagogicalRationale || activeDecision.reason,
+          supportingSkills: [
+            ...new Set([
+              ...activeDecision.supportingSkills,
+              ...reasoning.response.supportingSkills,
+            ]),
+          ].slice(0, 2),
+        };
+      }
+    } catch {
+      // Deterministic activeDecision used as safe fallback
+    }
+
     const blueprint = buildMissionBlueprint({
       skills: skillViews,
       intelligence,
       recentMistakes,
       recentTopics: learner.recentEvents.map((e) => e.summary),
-      currentDifficulty: trainingDecision.difficulty,
-      trainingDecision,
+      currentDifficulty: activeDecision.difficulty,
+      trainingDecision: activeDecision,
     });
     let exercise = await generateAdaptiveExercise({
       level: progression?.level ?? 1,

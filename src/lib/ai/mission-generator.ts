@@ -219,6 +219,32 @@ export function buildMissionBlueprint(input: {
     for (const tmp of tmpFiles) {
       scenarioOpportunities.push(`Investigate temporary artifact ${tmp.path} and safely review its state`);
     }
+
+    if (env.processes && env.processes.length > 0) {
+      scenarioOpportunities.push(
+        `Inspect active processes (e.g. ${env.processes[0]?.command ?? "daemons"}) and verify execution state`,
+      );
+    } else if (env.runtime?.capabilities?.processes) {
+      scenarioOpportunities.push(
+        "Inspect active system processes and verify execution state using ps",
+      );
+    }
+
+    if (env.network && env.network.listeners && env.network.listeners.length > 0) {
+      scenarioOpportunities.push(
+        `Inspect local network listeners on port ${env.network.listeners[0]?.port ?? "active"} and check interfaces`,
+      );
+    } else if (env.runtime?.capabilities?.network) {
+      scenarioOpportunities.push(
+        "Inspect local network interfaces and socket state using ip or ss",
+      );
+    }
+
+    if (env.services && env.services.length > 0) {
+      scenarioOpportunities.push(
+        `Verify service status for ${env.services[0]?.name ?? "system services"}`,
+      );
+    }
   }
 
   if (scenarioOpportunities.length === 0) {

@@ -208,6 +208,7 @@ export type AdaptiveReasoningRequest = {
     grade: number;
     mistakeBreakdown: Array<{ category: string; count: number }>;
   } | undefined;
+  recentTopics?: readonly string[] | undefined;
 };
 
 export type AdaptiveReasoningResponse = {

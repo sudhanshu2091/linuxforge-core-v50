@@ -99,17 +99,26 @@ export function evaluateConceptReadiness(input: {
   }
 
   // 3. Environment Artifact / Workspace Readiness check
-  // Determine if target concept requires an existing workspace or configuration artifact
+  // Determine if target concept can use existing files, directories, /tmp, or requires setup
   if (environment) {
     const observedPaths = environment.filesystem.map((f) => f.path);
     const allPaths = [...new Set([...observedPaths, ...knownArtifacts])];
+    const hasAnyUsableDir = allPaths.some(
+      (p) =>
+        p === "workspace" ||
+        p.startsWith("workspace/") ||
+        p === "project" ||
+        p.startsWith("project/") ||
+        p === "tmp" ||
+        p.startsWith("tmp/") ||
+        p === "/tmp" ||
+        p.startsWith("/tmp/") ||
+        p.includes("home"),
+    );
 
     if (targetSkill === "permissions") {
       // Permissions mission requires a target directory or file to modify
-      const hasWorkspace = allPaths.some(
-        (p) => p === "workspace" || p.startsWith("workspace/") || p === "project" || p.startsWith("project/"),
-      );
-      if (!hasWorkspace && observedPaths.length === 0) {
+      if (!hasAnyUsableDir && observedPaths.length === 0) {
         setupRequirements.push({
           kind: "artifact",
           description: "A workspace directory is required before practicing permissions management.",
@@ -120,10 +129,7 @@ export function evaluateConceptReadiness(input: {
       }
     } else if (targetSkill === "shell-scripting") {
       // Shell scripting requires a directory for scripts
-      const hasScriptDir = allPaths.some(
-        (p) => p === "workspace" || p.startsWith("workspace/") || p === "scripts" || p.startsWith("scripts/"),
-      );
-      if (!hasScriptDir && observedPaths.length === 0) {
+      if (!hasAnyUsableDir && observedPaths.length === 0) {
         setupRequirements.push({
           kind: "artifact",
           description: "A scripts workspace directory is required before authoring shell scripts.",
@@ -135,7 +141,11 @@ export function evaluateConceptReadiness(input: {
     } else if (targetSkill === "hardening") {
       // Hardening requires an existing configuration or audit target
       const hasAuditTarget = allPaths.some(
-        (p) => p.endsWith(".conf") || p.endsWith(".cfg") || p === "workspace" || p.startsWith("workspace/"),
+        (p) =>
+          p.endsWith(".conf") ||
+          p.endsWith(".cfg") ||
+          p === "workspace" ||
+          p.startsWith("workspace/"),
       );
       if (!hasAuditTarget && observedPaths.length === 0) {
         setupRequirements.push({

@@ -137,11 +137,13 @@ export type CompletionQualityInput = {
   hintsUsed: number;
   solutionRevealed: boolean;
   tutorInterventionCount?: number;
+  skillDemonstrated?: boolean;
+  bypassed?: boolean;
 };
 
 export type CompletionQuality = {
   mode: CompletionMode;
   independent: boolean;
   consumed: boolean;
-  consumedReason: "DIRECT_COMPLETION" | "NONE" | null;
+  consumedReason: "DIRECT_COMPLETION" | "ASSISTED" | "BYPASS" | "NONE" | null;
 };
