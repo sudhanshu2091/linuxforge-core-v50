@@ -1,0 +1,7 @@
+{
+  "name": "LinuxForge AI",
+  "description": "A guided, sandboxed way to learn Linux and defensive cybersecurity with a mentor-style AI tutor.",
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
