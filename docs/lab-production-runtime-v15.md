@@ -31,21 +31,82 @@ The browser never receives runtime credentials or connects directly to the hyper
 
 ---
 
-## Development vs Production Environments
+## Concrete Production Hypervisor Backend: QEMU
 
-### Development Environment
-- **Adapter**: `sandbox-runtime/` (Kali + Docker + PRoot) or local `runtime/qemu-runtime.py`.
-- **Runtime Class**: `container-dev` or local `vm`.
-- **Intended Use**: Local developer machines (Mac Apple Silicon with HVF, local Linux without dedicated virtualization node).
-- **Constraints**: Refuses `SANDBOX_RUNTIME_MODE=production`. Not intended for multi-tenant deployments.
+LinuxForge Core designates **QEMU** (hardware-accelerated via KVM on Linux x86_64, HVF on Apple Silicon macOS, or TCG emulation when configured) as the primary concrete isolated guest backend in this codebase (`runtime/qemu-runtime.py`).
 
-### Production Environment
-- **Provider**: `ProductionVmSandboxProvider` (`src/lib/forge/sandbox/production-vm-provider.server.ts`).
-- **Data Plane**: Hardware-accelerated microVM or dedicated VM nodes (`runtime/microvm-runtime.py` / Cloud Hypervisor / Firecracker / KVM).
-- **Host Pool**: `ProductionHostPool` (`src/lib/forge/sandbox/production-host-pool.server.ts`) managing capacity, placement, heartbeats, and worker lease lifecycles.
-- **Runtime Class**: `vm` or `microvm` strictly.
-- **Endpoint**: Dedicated virtualization nodes reached via authenticated HTTPS.
-- **Fail-Closed Gate**: If hardware virtualization (`/dev/kvm`), immutable image pinning, or isolation invariants are missing, production admission fails closed immediately.
+The provider boundary remains provider-neutral (`SandboxProvider` / `ProductionVmSandboxProvider`), with `runtime/microvm-runtime.py` maintaining capability detection for microVM hypervisors (Firecracker / Cloud Hypervisor) that fails closed when required virtualization and jailer binaries are absent on the host.
+
+### Host Prerequisites
+Running real guest execution requires the following host components:
+1. **Hypervisor Binary**: `qemu-system-x86_64` (or `qemu-system-aarch64`).
+2. **Virtualization Acceleration**: `/dev/kvm` accessible with read/write permissions (on Linux) or HVF (on macOS).
+3. **Cloud-Init Seed Tool**: `cloud-localds`, `genisoimage`, or `xorriso` for generating the NoCloud `seed.iso`.
+4. **SSH Tools**: `ssh` and `ssh-keygen` for guest readiness and control plane transport.
+5. **Disk Utility**: `qemu-img` for cloning and resizing qcow2 overlays.
+6. **Approved Base Image**: Controlled local Kali Linux qcow2 base image artifact pointed to by `FORGE_RUNTIME_IMAGE_PATH`.
+
+When any host prerequisite is absent, the runtime explicitly **fails closed** during capability checks and environment start, reporting the exact missing prerequisite without faking execution.
+
+---
+
+## Detailed Subsystem Implementations
+
+### 1. Immutable Image Resolution
+- Requested image references must adhere to `image@sha256:<64 hex chars>`.
+- The repository prefix is validated against `APPROVED_IMAGE_PREFIXES` (`kali-linux`, `linuxforge/kali`, `quay.io/linuxforge/kali`, `ghcr.io/sudhanshu2091/linuxforge-kali`).
+- Path traversals, arbitrary filesystem paths (`/`, `./`, `..`), and mutable tags (`:latest`) are rejected server-side.
+- The SHA-256 digest is verified against the host base image artifact. If the artifact is missing or the digest mismatches, the runtime fails closed.
+
+### 2. Isolated Guest Provisioning & Storage
+- Each environment receives a unique runtime directory (`data_dir / safe_id(environmentId)`).
+- Dedicated per-environment storage:
+  - Copy-on-write qcow2 overlay (`root.qcow2`) cloned from the approved base image.
+  - Safe disk expansion via `qemu-img resize` to ensure the disk never shrinks below backing image size.
+  - Per-environment Ed25519 SSH keypair (`id_ed25519`, permissions `0600`).
+  - Per-environment cloud-init `user-data` and `meta-data` packaged into `seed.iso`.
+- No host filesystem mounts (`-virtfs` / 9p is strictly prohibited).
+
+### 3. Network Isolation
+- QEMU user-mode slirp network is launched with:
+  `-netdev user,id=net0,restrict=on,hostfwd=tcp:127.0.0.1:{sshPort}-:22`
+  `-device virtio-net-pci,netdev=net0`
+- With `restrict=on`:
+  - Guest-to-host and guest-to-Internet communication is completely blocked (egress DENY).
+  - Cloud metadata service (`169.254.169.254` and `metadata.google.internal`) is unreachable.
+  - Cross-tenant / guest-to-guest traffic is strictly prevented.
+  - Only the host control-plane can connect to `127.0.0.1:{sshPort}` forwarded to guest port 22.
+
+### 4. Real Guest Readiness
+- Rather than a fake timer, `_wait_for_ssh` polls the guest:
+  1. Checks that the hypervisor process is alive (if it exited early, captures exit code and `qemu.log` tail and marks state `FAILED`).
+  2. Probes TCP port `127.0.0.1:{sshPort}`.
+  3. Executes an authenticated SSH probe (`ssh -o BatchMode=yes -i {key} -p {port} {user}@127.0.0.1 true`).
+  4. Only transitions to `READY` and `RUNNING` after authenticated SSH verification succeeds.
+
+### 5. Real Command Execution
+- The `execute` endpoint requires the environment to be `RUNNING`.
+- Learner commands are shell-quoted and dispatched strictly inside the guest via SSH.
+- Returns real stdout, stderr, exit code, execution duration, and guest observation deltas (filesystem, processes, listening ports).
+- Learner commands are never executed on the host.
+
+### 6. Real Interactive PTY
+- `pty_open` creates a genuine host pseudo-terminal (`pty.openpty()`), configures terminal geometry via `TIOCSWINSZ`, and connects into the guest shell via SSH.
+- `pty_read` uses non-blocking `select.select` on master fd to stream real guest output.
+- `pty_input` writes directly to master fd.
+- `pty_resize` updates terminal rows/columns via `ioctl(TIOCSWINSZ)`.
+- `pty_signal` delivers POSIX signals (`SIGINT`, `SIGTERM`, `SIGTSTP`, `EOF`).
+- Browser clients connect via the hardened WebSocket terminal gateway (`runtime/terminal-gateway.py`), which validates HMAC tickets and proxies PTY operations to the runtime HTTP service.
+
+### 7. Crash Recovery & Orphan Handling
+- Environment state is atomically persisted to `state.json`.
+- On service startup or reconciliation:
+  - Verifies that recorded hypervisor PIDs are alive and match `qemu-system-` with the specific environment disk path (preventing PID-reuse race conditions).
+  - Quarantines environments with unexpected process death.
+  - Reconciles orphan hypervisor processes referencing runtime disks and terminates them.
+
+### 8. Deterministic Teardown
+- `destroy` gracefully terminates the guest via QMP `quit` (falling back to SIGTERM/SIGKILL), closes active PTY sessions, deletes disks and seeds, releases allocated ports, and persists a durable tombstone `state.json` marked `DESTROYED`.
 
 ---
 

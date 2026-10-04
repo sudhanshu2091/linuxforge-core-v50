@@ -20,6 +20,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -42,6 +43,14 @@ from pathlib import Path
 from typing import Any
 
 SERVICE_VERSION = "v49.1-m4-persistent-environment-1"
+
+IMMUTABLE_IMAGE_REGEX = re.compile(r"^([a-zA-Z0-9_\-\.\/]+)@sha256:([0-9a-fA-F]{64})$")
+APPROVED_IMAGE_PREFIXES = (
+    "kali-linux",
+    "linuxforge/kali",
+    "quay.io/linuxforge/kali",
+    "ghcr.io/sudhanshu2091/linuxforge-kali",
+)
 
 LIFECYCLE_STATES = {"CREATING", "BOOTING", "READY", "RUNNING", "STOPPING", "STOPPED", "FAILED", "QUARANTINED", "DESTROYED", "PAUSED", "RESETTING"}
 LIFECYCLE_TRANSITIONS = {
@@ -165,7 +174,8 @@ class RuntimeManager:
     def __init__(self) -> None:
         self.data_dir = Path(os.environ.get("FORGE_RUNTIME_DATA_DIR", "./.linuxforge-runtime")).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.base_image = Path(os.environ.get("FORGE_RUNTIME_IMAGE_PATH", "")).expanduser().resolve()
+        img_env = os.environ.get("FORGE_RUNTIME_IMAGE_PATH", "").strip()
+        self.base_image = Path(img_env).expanduser().resolve() if img_env else Path(self.data_dir / ".unconfigured-base.qcow2")
         self.approved_image_ref = os.environ.get("FORGE_RUNTIME_IMAGE_REF", "")
         self.arch = os.environ.get("FORGE_RUNTIME_ARCH", "auto")
         self.qemu_accel = os.environ.get("FORGE_QEMU_ACCEL", "auto")
@@ -396,16 +406,40 @@ class RuntimeManager:
         return path
 
     def _assert_image(self, image_ref: str) -> None:
-        if not self.base_image.exists():
-            raise RuntimeError("FORGE_RUNTIME_IMAGE_PATH does not point to a Kali qcow2 image")
-        if self.approved_image_ref and image_ref != self.approved_image_ref:
-            raise RuntimeError("Runtime image reference is not the approved immutable image")
-        digest_file = self.base_image.with_suffix(self.base_image.suffix + ".sha256")
-        expected = None
-        if digest_file.exists():
-            expected = digest_file.read_text().strip().split()[0]
-        if expected and sha256_file(self.base_image) != expected:
-            raise RuntimeError("Kali base image SHA-256 verification failed")
+        if not image_ref or not isinstance(image_ref, str):
+            raise ValueError("Image reference is required and must be a string")
+        trimmed = image_ref.strip()
+        if trimmed.startswith("/") or trimmed.startswith("./") or ".." in trimmed:
+            raise ValueError("Arbitrary host paths are not permitted as image references")
+
+        match = IMMUTABLE_IMAGE_REGEX.match(trimmed)
+        if match:
+            repo, digest = match.groups()
+            is_approved = any(repo.lower().startswith(prefix.lower()) for prefix in APPROVED_IMAGE_PREFIXES)
+            if not is_approved:
+                raise ValueError(f"Image repository '{repo}' is not in the approved LinuxForge image list")
+            if not self.base_image.is_file():
+                raise RuntimeError(f"Approved immutable base image artifact '{trimmed}' is missing from host storage: {self.base_image}")
+            digest_file = self.base_image.with_suffix(self.base_image.suffix + ".sha256")
+            expected = None
+            if digest_file.exists():
+                expected = digest_file.read_text().strip().split()[0]
+            if expected:
+                if digest.lower() != expected.lower():
+                    raise RuntimeError(f"Base image SHA-256 verification failed for '{trimmed}' (expected {expected}, got {digest})")
+            elif sha256_file(self.base_image).lower() != digest.lower():
+                raise RuntimeError(f"Base image SHA-256 verification failed for '{trimmed}'")
+        else:
+            if not self.base_image.is_file():
+                raise RuntimeError("FORGE_RUNTIME_IMAGE_PATH does not point to a Kali qcow2 image")
+            if self.approved_image_ref and trimmed != self.approved_image_ref:
+                raise RuntimeError("Runtime image reference is not the approved immutable image")
+            digest_file = self.base_image.with_suffix(self.base_image.suffix + ".sha256")
+            expected = None
+            if digest_file.exists():
+                expected = digest_file.read_text().strip().split()[0]
+            if expected and sha256_file(self.base_image) != expected:
+                raise RuntimeError("Kali base image SHA-256 verification failed")
 
     def _architecture(self) -> str:
         if self.arch in {"x86_64", "amd64"}:
@@ -703,11 +737,13 @@ class RuntimeManager:
             image_ref = str(runtime.get("imageRef") or body.get("imageRef") or "")
             if not user_id or not lab_id or not image_ref:
                 raise RuntimeError("Runtime creation requires learner, lab and immutable image identity")
-            if runtime.get("runtimeClass") not in {"vm", "microvm"}:
+            runtime_class = body.get("runtimeClass") or runtime.get("runtimeClass") or (body.get("metadata") or {}).get("runtimeClass") or "vm"
+            if runtime_class not in {"vm", "microvm"}:
                 raise RuntimeError("V49 QEMU runtime requires vm or microvm runtime class")
             policy = body.get("resourcePolicy") or {}
-            if policy.get("network", "none") != "none":
-                raise RuntimeError("V49 local QEMU runtime only enables the management channel; lab network egress is disabled")
+            net_mode = policy.get("network", "none")
+            if net_mode not in {"none", "isolated"}:
+                raise RuntimeError("V49 local QEMU runtime enforces isolated guest networking with egress DENY; external egress requires dedicated host networking infrastructure")
             self._assert_image(image_ref)
             if env_id in self._envs and self._envs[env_id].lifecycleState in {"RUNNING", "READY", "BOOTING", "CREATING", "PAUSED", "STOPPING"}:
                 return self.descriptor(self._envs[env_id])
@@ -1224,7 +1260,7 @@ class RuntimeManager:
 
     def health(self) -> dict[str, Any]:
         qemu_ok = shutil.which("qemu-system-aarch64") or shutil.which("qemu-system-x86_64")
-        img_ok = self.base_image.exists()
+        img_ok = self.base_image.is_file()
         return {
             "provider": "real-linux-isolated-v1", "runtimeClass": "vm", "runtimeVersion": SERVICE_VERSION,
             "healthy": bool(qemu_ok and img_ok), "ready": bool(qemu_ok and img_ok), "checkedAt": now_iso(),

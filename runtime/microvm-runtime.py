@@ -317,6 +317,8 @@ class MicrovmRuntimeManager:
     def pty_open(self, env_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         with self._lock:
             env = self._get(env_id)
+            if env.status not in ("RUNNING", "READY"):
+                raise RuntimeError(f"Environment {env_id} is not running (status: {env.status})")
             sid = str(body.get("sessionId") or f"sess-{secrets.token_hex(8)}")
             self.ptys[sid] = {
                 "sessionId": sid,
@@ -333,15 +335,27 @@ class MicrovmRuntimeManager:
             }
 
     def pty_read(self, session_id: str) -> Dict[str, Any]:
+        session = self.ptys.get(session_id)
+        if not session:
+            raise KeyError("Terminal PTY session not found")
         return {"sessionId": session_id, "data": "", "exited": False}
 
     def pty_input(self, session_id: str, data: str) -> Dict[str, Any]:
+        session = self.ptys.get(session_id)
+        if not session:
+            raise KeyError("Terminal PTY session not found")
         return {"accepted": True}
 
     def pty_resize(self, session_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        session = self.ptys.get(session_id)
+        if not session:
+            raise KeyError("Terminal PTY session not found")
         return {"cols": body.get("cols", 120), "rows": body.get("rows", 30)}
 
     def pty_signal(self, session_id: str, signal_name: str) -> Dict[str, Any]:
+        session = self.ptys.get(session_id)
+        if not session:
+            raise KeyError("Terminal PTY session not found")
         return {"accepted": True, "signal": signal_name}
 
     def pty_close(self, session_id: str) -> Dict[str, Any]:
@@ -351,6 +365,12 @@ class MicrovmRuntimeManager:
 
     def execute(self, env_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         env = self._get(env_id)
+        if env.status != "RUNNING":
+            raise RuntimeError(f"Environment {env_id} is not running (status: {env.status})")
+        if not self.capabilities.is_production_capable():
+            raise RuntimeError("Production microVM execution requires hardware virtualization (/dev/kvm) and hypervisor binary.")
+        if not env.pid or not os.path.exists(f"/proc/{env.pid}"):
+            raise RuntimeError(f"MicroVM guest process for environment {env_id} is not active.")
         input_obj = body.get("input") or {}
         command = str(input_obj.get("data") or "")
         return {

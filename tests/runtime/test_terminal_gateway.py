@@ -365,34 +365,38 @@ class TerminalGatewayTests(unittest.TestCase):
 
     # 4. Connection Concurrency Limit Test
     def test_connection_concurrency_limit(self):
-        module.CONNECTION_LIMITER.max_connections = 1
-        self.assertTrue(module.CONNECTION_LIMITER.acquire())  # 1 connection active now
-
-        server_sock, client_sock = socket.socketpair()
-        ticket = self.make_ticket()
-        req = (
-            f"GET /v1/terminal?ticket={ticket} HTTP/1.1\r\n"
-            "Host: 127.0.0.1\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            "Sec-WebSocket-Version: 13\r\n"
-            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
-        )
+        old_limit = module.CONNECTION_LIMITER.max_connections
         try:
-            client_sock.sendall(req.encode("utf-8"))
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+            module.CONNECTION_LIMITER.max_connections = 1
+            self.assertTrue(module.CONNECTION_LIMITER.acquire())  # 1 connection active now
 
-        t = threading.Thread(target=module.client, args=(server_sock, ("127.0.0.1", 12345)), daemon=True)
-        t.start()
-        try:
-            resp = client_sock.recv(1024).decode("utf-8", errors="replace")
-            self.assertIn("503 Service Unavailable", resp)
-            self.assertIn("connection limit reached", resp)
+            server_sock, client_sock = socket.socketpair()
+            ticket = self.make_ticket()
+            req = (
+                f"GET /v1/terminal?ticket={ticket} HTTP/1.1\r\n"
+                "Host: 127.0.0.1\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                "Sec-WebSocket-Version: 13\r\n"
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+            )
+            try:
+                client_sock.sendall(req.encode("utf-8"))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+            t = threading.Thread(target=module.client, args=(server_sock, ("127.0.0.1", 12345)), daemon=True)
+            t.start()
+            try:
+                resp = client_sock.recv(1024).decode("utf-8", errors="replace")
+                self.assertIn("503 Service Unavailable", resp)
+                self.assertIn("connection limit reached", resp)
+            finally:
+                client_sock.close()
+                t.join(timeout=2.0)
         finally:
-            client_sock.close()
-            t.join(timeout=2.0)
             module.CONNECTION_LIMITER.release()
+            module.CONNECTION_LIMITER.max_connections = old_limit
 
     # 5. End-to-end Terminal Flow & Message Validation Tests
     def test_valid_terminal_flow_with_input_resize_signal_and_close(self):
