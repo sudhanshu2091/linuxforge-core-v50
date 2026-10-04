@@ -341,13 +341,20 @@ def client(sock: socket.socket, addr) -> None:
     try:
         # 1. Connection limit gate
         if not CONNECTION_LIMITER.acquire():
-            err_resp = (
-                "HTTP/1.1 503 Service Unavailable\r\n"
-                "Content-Type: application/json\r\n"
-                "Connection: close\r\n\r\n"
-                '{"error":"Terminal gateway connection limit reached."}'
-            )
-            sock.sendall(err_resp.encode("utf-8"))
+            try:
+                err_resp = (
+                    "HTTP/1.1 503 Service Unavailable\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Connection: close\r\n\r\n"
+                    '{"error":"Terminal gateway connection limit reached."}'
+                )
+                sock.sendall(err_resp.encode("utf-8"))
+                try:
+                    sock.shutdown(socket.SHUT_WR)
+                except Exception:
+                    pass
+            except Exception:
+                pass
             return
         acquired_limit = True
 

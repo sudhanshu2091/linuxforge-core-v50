@@ -1,66 +1,72 @@
-# LinuxForge production runtime boundary v15
+# LinuxForge production runtime boundary v15 & v50
 
-v15 closes an important control-plane gap without pretending the current Docker+PRoot runtime is production-grade.
+v50 completes the LinuxForge production runtime and host execution boundary, establishing a clear separation between local development and multi-tenant production execution.
 
-## Boundary
+## Architectural Boundary
 
 ```text
-Client
-  -> authenticated LinuxForge server
-  -> Lab Control Plane / durable jobs
-  -> Lab Worker
-  -> SandboxProvider
-  -> Runtime HTTP contract
-  -> dedicated VM or microVM (production)
+Learner Browser
+  |
+  | authenticated short-lived PTY ticket
+  v
+LinuxForge Application Server
+  |
+  | durable lab control plane / lab_jobs queue
+  v
+Production Host Pool & Worker Execution Plane
+  |
+  | capacity-aware placement / atomic lease & heartbeat
+  v
+Production Sandbox Provider (`ProductionVmSandboxProvider`)
+  |
+  | authenticated HTTPS REST contract (Bearer token)
+  v
+Dedicated Production VM / MicroVM Runtime (`runtime/microvm-runtime.py` / Cloud Hypervisor / Firecracker)
+  |
+  v
+Isolated Guest VM (guest root hostile to host; egress DENY default; no metadata/host mount)
 ```
 
-The worker still owns job leases and typed lifecycle dispatch. The provider remains the only adapter selected for runtime execution. The learner-facing application never receives a runtime credential or connects directly to the runtime.
+The browser never receives runtime credentials or connects directly to the hypervisor, QEMU monitor, Firecracker API, or host PTY.
 
-## Runtime launch contract
+---
 
-The provider now sends an explicit `runtime` object with:
+## Development vs Production Environments
 
-- `runtimeClass`: `vm` or `microvm` for production;
-- immutable `imageRef`: `image@sha256:<64 hex characters>`;
-- learner/lab ownership identifiers;
-- the existing CPU, memory, storage, process, file and output quotas;
-- security profile declaring host filesystem access, privilege escalation, device passthrough, nested virtualization and metadata access disabled.
+### Development Environment
+- **Adapter**: `sandbox-runtime/` (Kali + Docker + PRoot) or local `runtime/qemu-runtime.py`.
+- **Runtime Class**: `container-dev` or local `vm`.
+- **Intended Use**: Local developer machines (Mac Apple Silicon with HVF, local Linux without dedicated virtualization node).
+- **Constraints**: Refuses `SANDBOX_RUNTIME_MODE=production`. Not intended for multi-tenant deployments.
 
-Production admission fails closed when any of these requirements is missing.
+### Production Environment
+- **Provider**: `ProductionVmSandboxProvider` (`src/lib/forge/sandbox/production-vm-provider.server.ts`).
+- **Data Plane**: Hardware-accelerated microVM or dedicated VM nodes (`runtime/microvm-runtime.py` / Cloud Hypervisor / Firecracker / KVM).
+- **Host Pool**: `ProductionHostPool` (`src/lib/forge/sandbox/production-host-pool.server.ts`) managing capacity, placement, heartbeats, and worker lease lifecycles.
+- **Runtime Class**: `vm` or `microvm` strictly.
+- **Endpoint**: Dedicated virtualization nodes reached via authenticated HTTPS.
+- **Fail-Closed Gate**: If hardware virtualization (`/dev/kvm`), immutable image pinning, or isolation invariants are missing, production admission fails closed immediately.
 
-## Runtime health contract
+---
 
-Providers expose `getRuntimeHealth()` through `/v1/health`. Health is provider-reported and includes:
+## Production Security & Isolation Invariants
 
-- runtime class/version;
-- healthy/ready state;
-- network isolation status;
-- host-filesystem isolation status;
-- privilege-escalation blocking;
-- metadata-access blocking;
-- active-environment capacity.
-
-AI assessment is never used as evidence that these security properties exist.
-
-## Current development runtime
-
-`sandbox-runtime/` remains a development adapter using Kali + Docker + PRoot. It identifies itself as `container-dev` and refuses `SANDBOX_RUNTIME_MODE=production`.
-
-That is intentional. The next runtime implementation must be a dedicated VM/microVM per learner environment (or an equivalently strong isolation boundary), with network/resource policy enforced outside the guest. Do not deploy the Docker+PRoot service as the multi-tenant production runtime.
-
-## Production handoff requirements
-
-A production runtime service must implement the same provider contract while additionally enforcing:
-
-1. one isolated guest boundary per environment;
-2. no host filesystem mounts;
-3. no Docker socket or hypervisor control socket in the guest;
-4. no cloud metadata access;
-5. bounded CPU/RAM/disk/process/file/output resources;
-6. default network egress DENY, with explicit allowlists when a lab needs network access;
-7. encrypted, access-controlled snapshots;
-8. versioned, scanned and signed base images;
-9. authenticated runtime-to-control-plane communication;
-10. runtime-side teardown that remains safe if the learner obtains guest root.
-
-Firecracker, Cloud Hypervisor, Kata Containers, or another suitable isolation technology can implement this boundary; v15 deliberately does not lock the architecture to one hypervisor.
+1. **Host Isolation**:
+   - Zero host filesystem mounts.
+   - Zero Docker sockets or hypervisor control sockets inside guest.
+   - No host credentials or cloud provider metadata tokens inside guest.
+2. **Network Isolation**:
+   - Egress policy is `DENY` by default.
+   - Cloud metadata service (`169.254.169.254`, `metadata.google.internal`) is strictly blocked.
+   - Host loopback (`127.0.0.0/8`, `::1`) is strictly blocked.
+   - Cross-tenant / cross-learner inter-VM communication is strictly blocked.
+   - Lab-specific allowlists permit only explicitly authorized destination ports and protocols.
+3. **Immutable Image Pinning**:
+   - Mandatory reference format: `image@sha256:<64 hex characters>`.
+   - Mutable tags (`:latest`) and arbitrary host paths are rejected server-side.
+4. **Resource Quotas**:
+   - Enforced by server-side validation (`production-resource-policy.ts`) and guest cgroups (CPU, memory, storage, process count, file descriptors, output bytes).
+5. **Durable Lifecycle & Crash Recovery**:
+   - States: `PROVISIONING` -> `STARTING` -> `READY`/`RUNNING` -> `STOPPING` -> `STOPPED` -> `DESTROYING` -> `DESTROYED`.
+   - Unhealthy exits transition to durable `FAILED`/`ERROR`.
+   - Stale worker leases and orphaned jobs are automatically reclaimed by `recoverExpiredJobs()`.

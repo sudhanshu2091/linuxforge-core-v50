@@ -1,8 +1,31 @@
-# LinuxForge V49 runtime services
+# LinuxForge Runtime Services (v50)
 
-These processes run in the infrastructure/runtime plane, not inside the learner browser and not as part of the TanStack application process.
+These processes run in the infrastructure/runtime plane on dedicated host workers, completely isolated from the learner browser and outside the TanStack application process.
 
-## QEMU runtime
+## 1. Production MicroVM Data Plane
+
+Hardware-isolated microVM data plane supporting Firecracker and Cloud Hypervisor:
+
+```bash
+FORGE_RUNTIME_SERVICE_TOKEN='...' \
+FORGE_RUNTIME_DATA_DIR='/var/lib/linuxforge-microvm' \
+python3 runtime/microvm-runtime.py
+```
+
+Default listener: `127.0.0.1:18082`.
+
+### Production Security Invariants:
+- Requires KVM (`/dev/kvm`); fails closed with `ERROR` status if hardware virtualization is absent.
+- Pinned immutable image reference check (`image@sha256:<64 hex chars>`).
+- Zero host filesystem mounts; zero Docker or hypervisor control sockets exposed to guest.
+- Network policy: `DENY` egress default; cloud metadata (`169.254.169.254`) and host loopback strictly blocked.
+- PTY terminal streaming session support matching the terminal gateway contract.
+
+---
+
+## 2. Development QEMU Runtime
+
+Local development VM runtime:
 
 ```bash
 FORGE_RUNTIME_SERVICE_TOKEN='...' \
@@ -13,33 +36,27 @@ python3 runtime/qemu-runtime.py
 
 Default listener: `127.0.0.1:18080`.
 
-## Browser terminal gateway
+Intended for local development on Apple Silicon (QEMU + HVF) or local Linux workstations.
+
+---
+
+## 3. Browser Terminal Gateway (Hardened)
+
+Edge WebSocket gateway for interactive PTY sessions:
 
 ```bash
 FORGE_RUNTIME_SERVICE_TOKEN='...' \
 FORGE_TERMINAL_TICKET_SECRET='at-least-32-random-bytes' \
-FORGE_RUNTIME_HTTP_ENDPOINT='http://127.0.0.1:18080' \
-FORGE_TERMINAL_ALLOWED_ORIGIN='http://localhost:3000' \
+FORGE_RUNTIME_HTTP_ENDPOINT='http://127.0.0.1:18082' \
+FORGE_TERMINAL_ALLOWED_ORIGIN='https://linuxforge.app' \
 python3 runtime/terminal-gateway.py
 ```
 
 Default listener: `127.0.0.1:18081`.
 
-The application server mints a short-lived HMAC ticket after Supabase authentication and V45 runtime-isolation authorization. The browser receives only that ticket and the gateway URL; the runtime service token and SSH key never leave the infrastructure plane.
-
-In production, place the gateway behind the LinuxForge HTTPS edge and set `FORGE_TERMINAL_ALLOWED_ORIGIN` to the exact application origin. The gateway may then proxy to a production VM/microVM runtime service using the same provider-neutral contract.
-
-
-## QEMU process supervision and diagnostics
-
-V49-qemu-2 does not treat a persisted `RUNNING` flag as proof that a VM is alive. The runtime:
-
-- waits for the guest SSH service to become usable before returning `RUNNING`;
-- captures QEMU stdout/stderr in `<environment>/qemu.log`;
-- records `qemuExitCode` and the log path in `state.json`;
-- continuously reconciles exited QEMU processes with a watchdog;
-- changes unexpected QEMU exits to durable `ERROR` state instead of leaving stale `RUNNING`;
-- verifies the recorded PID is actually a QEMU process for that environment's disk, reducing PID-reuse mistakes;
-- refuses to pause a VM whose QEMU process is not alive.
-
-A healthy environment therefore has both a live QEMU process and a successful SSH readiness check. If QEMU exits during boot, the create/start operation fails with the QEMU log tail instead of returning a false `RUNNING` environment.
+### Gateway Hardening Properties:
+- Full RFC 6455 protocol validation: requires client frame masking, enforces frame size limits (`16KB`), fragmented frame assembly with maximum message size bounds (`64KB`), and clean close frames.
+- Connection limits and resource exhaustion protection: thread-safe `ConnectionLimiter` with configurable limits (`FORGE_TERMINAL_MAX_CONNECTIONS`), idle timeout (`300s`), and maximum session duration (`3600s`).
+- Short-lived HMAC ticket validation binding `userId`, `labId`, `environmentId`, `sessionId`, `bindingGeneration`, and `runtimeLifecycleGeneration`.
+- Input validation: JSON schema validation, input string type and byte bounds, integer resize bounds, signal whitelisting (`SIGINT`, `SIGTERM`, `SIGTSTP`, `EOF`).
+- Server credentials and internal tokens are never transmitted to the browser.

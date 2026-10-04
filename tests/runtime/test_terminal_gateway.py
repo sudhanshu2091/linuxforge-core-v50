@@ -369,19 +369,23 @@ class TerminalGatewayTests(unittest.TestCase):
         self.assertTrue(module.CONNECTION_LIMITER.acquire())  # 1 connection active now
 
         server_sock, client_sock = socket.socketpair()
+        ticket = self.make_ticket()
+        req = (
+            f"GET /v1/terminal?ticket={ticket} HTTP/1.1\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            "Sec-WebSocket-Version: 13\r\n"
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+        )
+        try:
+            client_sock.sendall(req.encode("utf-8"))
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
         t = threading.Thread(target=module.client, args=(server_sock, ("127.0.0.1", 12345)), daemon=True)
         t.start()
         try:
-            ticket = self.make_ticket()
-            req = (
-                f"GET /v1/terminal?ticket={ticket} HTTP/1.1\r\n"
-                "Host: 127.0.0.1\r\n"
-                "Upgrade: websocket\r\n"
-                "Connection: Upgrade\r\n"
-                "Sec-WebSocket-Version: 13\r\n"
-                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
-            )
-            client_sock.sendall(req.encode("utf-8"))
             resp = client_sock.recv(1024).decode("utf-8", errors="replace")
             self.assertIn("503 Service Unavailable", resp)
             self.assertIn("connection limit reached", resp)
