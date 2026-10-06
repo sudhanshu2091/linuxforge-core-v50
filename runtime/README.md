@@ -2,24 +2,19 @@
 
 These processes run in the infrastructure/runtime plane on dedicated host workers, completely isolated from the learner browser and outside the TanStack application process.
 
-## 1. Production MicroVM Data Plane
+## 1. MicroVM provider boundary
 
-Hardware-isolated microVM data plane supporting Firecracker and Cloud Hypervisor:
+The provider-neutral architecture reserves a `microvm` runtime class for future Firecracker or Cloud Hypervisor support. **That backend is not implemented in v50.**
 
-```bash
-FORGE_RUNTIME_SERVICE_TOKEN='...' \
-FORGE_RUNTIME_DATA_DIR='/var/lib/linuxforge-microvm' \
-python3 runtime/microvm-runtime.py
-```
+`runtime/microvm-runtime.py` is intentionally fail-closed:
 
-Default listener: `127.0.0.1:18082`.
+- health reports `available=false`, `configured=false`, `executable=false`, and `ready=false`;
+- missing prerequisites include the unimplemented guest data plane, even if a hypervisor binary happens to be installed;
+- environment creation, start/reset/resume, command execution, and PTY operations fail explicitly;
+- no fake stdout/stderr, exit code, READY/RUNNING state, or simulated PTY is produced;
+- no microVM capability such as processes, services, packages, network, snapshots, or interactive shell is advertised.
 
-### Production Security Invariants:
-- Requires KVM (`/dev/kvm`); fails closed with `ERROR` status if hardware virtualization is absent.
-- Pinned immutable image reference check (`image@sha256:<64 hex chars>`).
-- Zero host filesystem mounts; zero Docker or hypervisor control sockets exposed to guest.
-- Network policy: `DENY` egress default; cloud metadata (`169.254.169.254`) and host loopback strictly blocked.
-- PTY terminal streaming session support matching the terminal gateway contract.
+A future Firecracker/Cloud Hypervisor implementation must provide a real guest lifecycle, authenticated guest readiness, real command execution, and real PTY transport before this provider can report readiness.
 
 ---
 
@@ -30,7 +25,7 @@ Local development VM runtime:
 ```bash
 FORGE_RUNTIME_SERVICE_TOKEN='...' \
 FORGE_RUNTIME_IMAGE_PATH='/path/to/kali.qcow2' \
-FORGE_RUNTIME_IMAGE_REF='kali-2026.2-arm64' \
+FORGE_RUNTIME_IMAGE_REF='kali-linux@sha256:<64-hex-digest>' \
 python3 runtime/qemu-runtime.py
 ```
 

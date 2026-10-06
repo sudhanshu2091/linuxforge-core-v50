@@ -21,7 +21,7 @@ Production Sandbox Provider (`ProductionVmSandboxProvider`)
   |
   | authenticated HTTPS REST contract (Bearer token)
   v
-Dedicated Production VM / MicroVM Runtime (`runtime/microvm-runtime.py` / Cloud Hypervisor / Firecracker)
+Concrete Production Guest Runtime (`runtime/qemu-runtime.py`)
   |
   v
 Isolated Guest VM (guest root hostile to host; egress DENY default; no metadata/host mount)
@@ -35,7 +35,7 @@ The browser never receives runtime credentials or connects directly to the hyper
 
 LinuxForge Core designates **QEMU** (hardware-accelerated via KVM on Linux x86_64, HVF on Apple Silicon macOS, or TCG emulation when configured) as the primary concrete isolated guest backend in this codebase (`runtime/qemu-runtime.py`).
 
-The provider boundary remains provider-neutral (`SandboxProvider` / `ProductionVmSandboxProvider`), with `runtime/microvm-runtime.py` maintaining capability detection for microVM hypervisors (Firecracker / Cloud Hypervisor) that fails closed when required virtualization and jailer binaries are absent on the host.
+The provider boundary remains provider-neutral (`SandboxProvider` / `ProductionVmSandboxProvider`). QEMU is the currently implemented concrete guest backend. `runtime/microvm-runtime.py` is only a fail-closed provider boundary for future Firecracker / Cloud Hypervisor work; it is not a functioning microVM guest runtime.
 
 ### Host Prerequisites
 Running real guest execution requires the following host components:
@@ -49,6 +49,14 @@ Running real guest execution requires the following host components:
 When any host prerequisite is absent, the runtime explicitly **fails closed** during capability checks and environment start, reporting the exact missing prerequisite without faking execution.
 
 ---
+
+## MicroVM Implementation Status
+
+Firecracker and Cloud Hypervisor are **not implemented** as production guest backends in this repository. The microVM provider must report `ready=false` and fail closed for creation, start, execution, and PTY requests until a real hypervisor-backed lifecycle exists.
+
+Installing a hypervisor binary or exposing KVM is not sufficient to mark the provider executable. A future implementation must prove the guest process exists, authenticated guest readiness succeeds, and command/PTY traffic terminates inside that guest.
+
+No fake execution, placeholder output, unconditional success exit codes, simulated PTYs, or READY/RUNNING states without a real guest are permitted.
 
 ## Detailed Subsystem Implementations
 
