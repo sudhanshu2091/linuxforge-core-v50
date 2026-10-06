@@ -1,6 +1,4 @@
 import importlib.util
-import json
-import os
 import sys
 import unittest
 from pathlib import Path
@@ -17,20 +15,33 @@ spec.loader.exec_module(module)
 class MicrovmRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.manager = module.MicrovmRuntimeManager(auth_token="test-secret")
+        self.image = "kali-linux@sha256:" + "a" * 64
 
-    def test_immutable_image_digest_validation(self):
-        # Valid pinned sha256 reference
-        valid_digest = "kali-linux@sha256:" + "a" * 64
-        created = self.manager.create({
-            "environmentId": "env-valid",
-            "userId": "user1",
-            "labId": "lab1",
-            "imageRef": valid_digest,
-        })
-        self.assertEqual(created["status"], "READY")
-        self.assertEqual(created["handle"]["environmentId"], "env-valid")
+    def test_health_is_truthful_and_not_ready(self):
+        health = self.manager.health()
+        self.assertEqual(health["runtimeClass"], "microvm")
+        self.assertTrue(health["healthy"])
+        self.assertFalse(health["ready"])
+        self.assertFalse(health["available"])
+        self.assertFalse(health["configured"])
+        self.assertFalse(health["executable"])
+        self.assertFalse(health["capabilities"]["providerExecutable"])
+        self.assertFalse(health["capabilities"]["guestRunning"])
+        self.assertFalse(health["capabilities"]["commandExecution"])
+        self.assertFalse(health["capabilities"]["interactivePty"])
+        self.assertIn("implemented-microvm-guest-data-plane", health["missingPrerequisites"])
 
-        # Invalid unpinned tag
+    def test_create_fails_closed_instead_of_claiming_ready(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            self.manager.create({
+                "environmentId": "env-create",
+                "userId": "user1",
+                "labId": "lab1",
+                "imageRef": self.image,
+            })
+        self.assertIn("not implemented", str(ctx.exception).lower())
+
+    def test_invalid_image_is_rejected_before_unavailable_provider(self):
         with self.assertRaises(ValueError) as ctx:
             self.manager.create({
                 "environmentId": "env-bad-tag",
@@ -40,84 +51,81 @@ class MicrovmRuntimeTests(unittest.TestCase):
             })
         self.assertIn("must be pinned by sha256", str(ctx.exception))
 
-    def test_health_reports_security_invariants(self):
-        health = self.manager.health()
-        self.assertEqual(health["runtimeClass"], "microvm")
-        sec = health["security"]
-        self.assertTrue(sec["networkIsolationEnforced"])
-        self.assertTrue(sec["hostFilesystemBlocked"])
-        self.assertTrue(sec["privilegeEscalationBlocked"])
-        self.assertTrue(sec["metadataAccessBlocked"])
+    def test_lifecycle_cannot_claim_running(self):
+        env = module.ProductionEnvironment(
+            environmentId="env-lifecycle",
+            userId="u1",
+            labId="l1",
+            imageRef=self.image,
+        )
+        self.manager.environments[env.environmentId] = env
 
-    def test_lifecycle_transitions(self):
-        image = "kali-linux@sha256:" + "b" * 64
-        self.manager.create({
-            "environmentId": "env-lifecycle",
-            "userId": "u1",
-            "labId": "l1",
-            "imageRef": image,
-        })
+        with self.assertRaises(RuntimeError):
+            self.manager.start(env.environmentId)
+        self.assertNotEqual(env.status, "RUNNING")
+        self.assertNotEqual(env.lifecycleState, "RUNNING")
 
-        # Mock KVM available for lifecycle test
-        self.manager.capabilities.kvm_available = True
-        self.manager.capabilities.hypervisor_type = "cloud-hypervisor"
+        with self.assertRaises(RuntimeError):
+            self.manager.resume(env.environmentId)
+        self.assertNotEqual(env.status, "RUNNING")
 
-        started = self.manager.start("env-lifecycle")
-        self.assertEqual(started["status"], "RUNNING")
+    def test_execute_fails_without_guest(self):
+        env = module.ProductionEnvironment(
+            environmentId="env-exec",
+            userId="u1",
+            labId="l1",
+            imageRef=self.image,
+        )
+        self.manager.environments[env.environmentId] = env
 
-        paused = self.manager.pause("env-lifecycle")
-        self.assertEqual(paused["status"], "PAUSED")
+        with self.assertRaises(RuntimeError):
+            self.manager.execute(env.environmentId, {"input": {"data": "printf hello"}})
 
-        resumed = self.manager.resume("env-lifecycle")
-        self.assertEqual(resumed["status"], "RUNNING")
+    def test_pty_fails_without_guest(self):
+        env = module.ProductionEnvironment(
+            environmentId="env-pty",
+            userId="u1",
+            labId="l1",
+            imageRef=self.image,
+        )
+        self.manager.environments[env.environmentId] = env
 
-        stopped = self.manager.stop("env-lifecycle")
-        self.assertEqual(stopped["status"], "STOPPED")
+        with self.assertRaises(RuntimeError):
+            self.manager.pty_open(env.environmentId, {"sessionId": "s-1"})
 
-        destroyed = self.manager.destroy("env-lifecycle")
-        self.assertTrue(destroyed["destroyed"])
-        with self.assertRaises(KeyError):
-            self.manager._get("env-lifecycle")
+        with self.assertRaises(RuntimeError):
+            self.manager.pty_read("s-1")
+        with self.assertRaises(RuntimeError):
+            self.manager.pty_input("s-1", "id\n")
+        with self.assertRaises(RuntimeError):
+            self.manager.pty_resize("s-1", {"cols": 80, "rows": 24})
+        with self.assertRaises(RuntimeError):
+            self.manager.pty_signal("s-1", "SIGINT")
 
-    def test_fail_closed_without_kvm(self):
-        image = "kali-linux@sha256:" + "c" * 64
-        self.manager.create({
-            "environmentId": "env-no-kvm",
-            "userId": "u1",
-            "labId": "l1",
-            "imageRef": image,
-        })
-        self.manager.capabilities.kvm_available = False
-        with self.assertRaises(RuntimeError) as ctx:
-            self.manager.start("env-no-kvm")
-        self.assertIn("requires hardware virtualization", str(ctx.exception))
-        env = self.manager._get("env-no-kvm")
-        self.assertEqual(env.status, "ERROR")
+    def test_descriptor_never_advertises_guest_capabilities(self):
+        env = module.ProductionEnvironment(
+            environmentId="env-desc",
+            userId="u1",
+            labId="l1",
+            imageRef=self.image,
+        )
+        descriptor = self.manager.descriptor(env)
+        caps = descriptor["capabilities"]
+        self.assertFalse(caps["realLinux"])
+        self.assertFalse(caps["interactiveShell"])
+        self.assertFalse(caps["processes"])
+        self.assertFalse(caps["services"])
+        self.assertFalse(caps["network"])
+        self.assertFalse(caps["packages"])
+        self.assertFalse(caps["snapshots"])
+        self.assertFalse(caps["pauseResume"])
 
-    def test_pty_session_flow(self):
-        image = "kali-linux@sha256:" + "d" * 64
-        self.manager.create({
-            "environmentId": "env-pty",
-            "userId": "u1",
-            "labId": "l1",
-            "imageRef": image,
-        })
-        opened = self.manager.pty_open("env-pty", {"sessionId": "s-1", "shell": "bash"})
-        self.assertEqual(opened["sessionId"], "s-1")
-        self.assertIn("s-1", self.manager.ptys)
-
-        in_res = self.manager.pty_input("s-1", "ls -la\n")
-        self.assertTrue(in_res["accepted"])
-
-        resize_res = self.manager.pty_resize("s-1", {"cols": 80, "rows": 24})
-        self.assertEqual(resize_res["cols"], 80)
-
-        sig_res = self.manager.pty_signal("s-1", "SIGINT")
-        self.assertTrue(sig_res["accepted"])
-
-        close_res = self.manager.pty_close("s-1")
-        self.assertTrue(close_res["closed"])
-        self.assertNotIn("s-1", self.manager.ptys)
+    def test_no_successful_execution_shape_exists(self):
+        source = MODULE_PATH.read_text()
+        self.assertNotIn('"exitCode": 0', source)
+        self.assertNotIn('"stdout": ""', source)
+        self.assertNotIn('"stderr": ""', source)
+        self.assertNotIn('"durationMs": 10', source)
 
 
 if __name__ == "__main__":

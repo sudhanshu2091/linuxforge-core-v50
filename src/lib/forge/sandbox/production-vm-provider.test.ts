@@ -54,6 +54,23 @@ describe("Production VM Sandbox Provider", () => {
     ).toThrow("must be pinned by SHA-256 digest");
   });
 
+  it("does not advertise guest capabilities for the unimplemented microVM class", () => {
+    const provider = new ProductionVmSandboxProvider({
+      endpoint: "https://127.0.0.1:18082",
+      credential: "secret",
+      imageRef: validImage,
+      runtimeClass: "microvm",
+      production: true,
+    });
+
+    expect(provider.capabilities.realLinux).toBe(false);
+    expect(provider.capabilities.interactiveShell).toBe(false);
+    expect(provider.capabilities.processes).toBe(false);
+    expect(provider.capabilities.services).toBe(false);
+    expect(provider.capabilities.network).toBe(false);
+    expect(provider.capabilities.packages).toBe(false);
+  });
+
   it("dispatches createEnvironment and startEnvironment to runtime", async () => {
     const provider = new ProductionVmSandboxProvider({
       endpoint: "https://127.0.0.1:18080",

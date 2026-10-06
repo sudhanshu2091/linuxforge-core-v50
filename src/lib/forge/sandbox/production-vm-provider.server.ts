@@ -98,10 +98,31 @@ export class ProductionVmSandboxProvider implements SandboxProvider {
       throw new Error("Production runtime endpoint must use HTTPS.");
     }
 
-    this.capabilities = {
-      ...PRODUCTION_VM_CAPABILITIES,
-      runtimeClass: config.runtimeClass,
-    };
+    this.capabilities =
+      config.runtimeClass === "vm"
+        ? {
+            ...PRODUCTION_VM_CAPABILITIES,
+            runtimeClass: "vm",
+          }
+        : {
+            ...PRODUCTION_VM_CAPABILITIES,
+            label: "MicroVM provider (not implemented)",
+            description:
+              "The microVM provider boundary is reserved for a future real Firecracker/Cloud Hypervisor backend.",
+            realLinux: false,
+            runtimeClass: "microvm",
+            modelled: false,
+            interactiveShell: false,
+            streaming: false,
+            resize: false,
+            processes: false,
+            services: false,
+            environmentVariables: false,
+            network: false,
+            snapshots: false,
+            pauseResume: false,
+            packages: false,
+          };
   }
 
   private async call<T>(
